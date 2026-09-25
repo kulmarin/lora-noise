@@ -214,29 +214,22 @@ def create_lora_model(
 def train_with_tracking(
     model: nn.Module,
     train_loader: DataLoader,
-    tracking_loader: DataLoader,
     val_loader: DataLoader,
-    tracker: TemporalTracker,
     n_epochs: int = 5,
     learning_rate: float = 2e-5,
     eval_every_n_steps: int = 100,
-    device: str = "mps",
     max_grad_norm: float = 1.0,
     class_weights: Optional[torch.Tensor] = None,
 ) -> Dict[str, Any]:
     """Train model while recording per-example losses at regular intervals.
 
-    The training loop uses the full combined dataset (SNLI + ChaosNLI)
-    for gradient updates. Tracking passes use a SEPARATE DataLoader
-    containing only ChaosNLI examples (those with entropy annotations),
-    avoiding unnecessary computation on the ~20K SNLI-only examples.
+    The training loop uses the full dataset (NOISY AG)
+    for gradient updates.
 
     Args:
         model: PEFT model to train.
-        train_loader: Training data loader (full SNLI + ChaosNLI).
-        tracking_loader: DataLoader with ChaosNLI examples only (for tracking).
-        val_loader: Validation data loader (ChaosNLI val set).
-        tracker: TemporalTracker for recording per-example losses.
+        train_loader: Training data loader .
+        val_loader: Validation data loader.
         n_epochs: Number of training epochs.
         learning_rate: Optimizer learning rate.
         eval_every_n_steps: Record per-example losses every N steps.
@@ -247,7 +240,8 @@ def train_with_tracking(
     Returns:
         Dictionary with training history: per-step metrics, final metrics.
     """
-    model = model.to(device)
+
+    model = model.to("cpu")
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
         lr=learning_rate,
@@ -268,7 +262,7 @@ def train_with_tracking(
 
     # Class-weighted loss for training (handles label imbalance)
     if class_weights is not None:
-        class_weights = class_weights.to(device)
+        class_weights = class_weights.to("cpu")
         print(f"  Class weights: {class_weights.tolist()}")
 
     loss_fn = nn.CrossEntropyLoss(reduction="none")  # per-example losses (unweighted, for tracking)
@@ -278,24 +272,21 @@ def train_with_tracking(
         "train_loss": [],
         "val_loss": [],
         "val_accuracy": [],
-        "tracking_steps": [],
         "learning_rates": [],
     }
 
     global_step = 0
-    tracking_step = 0
 
     print(f"  Total training steps: {total_steps}")
     print(f"  Warmup steps: {warmup_steps}")
-    print(f"  Tracking every {eval_every_n_steps} steps ({total_steps // eval_every_n_steps} checkpoints expected)")
     print(f"  Training examples: {len(train_loader.dataset)}")
-    print(f"  Tracking examples: {len(tracking_loader.dataset)} (ChaosNLI only)")
+
 
     # Initial tracking pass (step 0, before any training)
     print("  Recording initial per-example losses (step 0)...")
-    _record_tracking_pass(model, tracking_loader, tracker, tracking_step, loss_fn, device)
-    history["tracking_steps"].append(0)
-    tracking_step += 1
+
+    model.eval()
+    model.train()
 
     for epoch in range(n_epochs):
         model.train()
@@ -308,9 +299,10 @@ def train_with_tracking(
         )
 
         for batch in pbar:
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            labels = batch["labels"].to(device)
+            print(batch)
+            input_ids = batch["input_ids"].to("cpu")
+            attention_mask = batch["attention_mask"].to("cpu")
+            labels = batch["noisy_label"].to("cpu")
 
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
             loss = loss_fn_mean(outputs.logits, labels)
@@ -326,25 +318,10 @@ def train_with_tracking(
 
             pbar.set_postfix(loss=f"{loss.item():.4f}")
 
-            # Periodic tracking pass (on ChaosNLI examples only)
-            if global_step % eval_every_n_steps == 0:
-                _record_tracking_pass(
-                    model, tracking_loader, tracker, tracking_step, loss_fn, device,
-                )
-                history["tracking_steps"].append(global_step)
-                tracking_step += 1
-
-        # End-of-epoch tracking pass (if not already done at this step)
-        if global_step % eval_every_n_steps != 0:
-            _record_tracking_pass(
-                model, tracking_loader, tracker, tracking_step, loss_fn, device,
-            )
-            history["tracking_steps"].append(global_step)
-            tracking_step += 1
 
         # Record epoch-level metrics
         train_loss = np.mean(epoch_losses)
-        val_loss, val_acc = _evaluate(model, val_loader, loss_fn_mean, device)
+        val_loss, val_acc = _evaluate(model, val_loader, loss_fn_mean, "cpu")
         history["train_loss"].append(float(train_loss))
         history["val_loss"].append(float(val_loss))
         history["val_accuracy"].append(float(val_acc))
@@ -357,45 +334,9 @@ def train_with_tracking(
             f"val_acc={val_acc:.4f}"
         )
 
-    history["total_tracking_steps"] = tracking_step
+
     return history
 
-
-@torch.no_grad()
-def _record_tracking_pass(
-    model: nn.Module,
-    data_loader: DataLoader,
-    tracker: TemporalTracker,
-    step: int,
-    loss_fn: nn.Module,
-    device: str,
-) -> None:
-    """Do a full pass over ChaosNLI examples to record per-example losses.
-
-    This is the instrumentation core: we evaluate every ChaosNLI training
-    example and store its loss in the tracker, indexed by step number.
-    Only ChaosNLI examples (those with entropy annotations) are evaluated
-    here -- the ~20K SNLI-only examples are skipped.
-
-    We re-purpose TemporalTracker.record_epoch_losses with step as the
-    "epoch" index, since our tracking granularity is finer than epochs.
-    """
-    model.eval()
-    for batch in data_loader:
-        input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
-        labels = batch["labels"].to(device)
-        example_ids = batch["example_id"]
-
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-        losses = loss_fn(outputs.logits, labels)
-
-        tracker.record_epoch_losses(
-            example_ids=list(example_ids),
-            losses=losses.cpu().numpy(),
-            epoch=step,
-        )
-    model.train()
 
 
 @torch.no_grad()
@@ -815,6 +756,9 @@ def _load_chaosnli_data(
 
 
 def main() -> None:
+
+    print("Step 1: Loading data...")
+
     train_dataloader, noise_dataset = create_dataloader(
         file_path="../data/samples40000trainMed.csv",
         tokenizer_path="bert-base-uncased",
@@ -844,272 +788,45 @@ def main() -> None:
     print(noise_dataset.__len__())
 
 
-    # args = parse_args()
-    # t0 = time.time()
-    #
-    # # Use cached models/datasets to avoid HuggingFace connectivity delays
-    # os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-    # os.environ.setdefault("HF_HUB_OFFLINE", "1")
-    #
-    # set_seed(args.seed)
-    #
-    # device = detect_device(args.device)
-    # output_dir = Path(args.output_dir) if args.output_dir else PROJECT_ROOT / "results" / "tracking"
-    # figure_dir = Path(args.figure_dir) if args.figure_dir else PROJECT_ROOT / "figures"
-    # output_dir.mkdir(parents=True, exist_ok=True)
-    # figure_dir.mkdir(parents=True, exist_ok=True)
-    #
-    # print("=" * 70)
-    # print("Phase 1: Pilot Experiment (SNLI + ChaosNLI tracking)")
-    # print("=" * 70)
-    # print(f"  Rank:       {args.rank}")
-    # print(f"  Seed:       {args.seed}")
-    # print(f"  Epochs:     {args.epochs}")
-    # print(f"  LR:         {args.learning_rate}")
-    # print(f"  Device:     {device}")
-    # print(f"  SNLI size:  {args.snli_size}")
-    # print(f"  Eval every: {args.eval_every_n_steps} steps")
-    # print(f"  Loss threshold: {args.loss_threshold}")
-    # print()
-    #
-    # from transformers import AutoTokenizer
-    # tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    #
-    # if args.synthetic:
-    #     # ------------------------------------------------------------- #
-    #     # Synthetic mode: use synthetic data for pipeline testing
-    #     # ------------------------------------------------------------- #
-    #     print("Step 1: Loading SYNTHETIC data (--synthetic flag set)...")
-    #
-    #     from src.data.chaosnli import create_synthetic_chaosnli
-    #     from src.data.annotation_entropy import categorize_by_entropy
-    #
-    #     data = create_synthetic_chaosnli(
-    #         n_examples=args.n_synthetic,
-    #         n_annotators=100,
-    #         seed=args.seed,
-    #     )
-    #     entropies = [
-    #         compute_annotation_entropy_from_distribution(dist)
-    #         for dist in data["label_distributions"]
-    #     ]
-    #     cats = categorize_by_entropy(np.array(entropies), thresholds=[0.4, 0.7])
-    #     n = len(data["premises"])
-    #
-    #     from sklearn.model_selection import StratifiedShuffleSplit
-    #     splitter = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=args.seed)
-    #     train_idx, val_idx = next(splitter.split(np.arange(n), cats.categories))
-    #
-    #     # In synthetic mode, all examples are "tracked" (no SNLI supplement)
-    #     train_premises = [data["premises"][i] for i in train_idx]
-    #     train_hypotheses = [data["hypotheses"][i] for i in train_idx]
-    #     train_labels = [int(data["majority_labels"][i]) for i in train_idx]
-    #     train_example_ids = [data["example_ids"][i] for i in train_idx]
-    #     train_entropies = [entropies[i] for i in train_idx]
-    #
-    #     val_premises = [data["premises"][i] for i in val_idx]
-    #     val_hypotheses = [data["hypotheses"][i] for i in val_idx]
-    #     val_labels = [int(data["majority_labels"][i]) for i in val_idx]
-    #     val_example_ids = [data["example_ids"][i] for i in val_idx]
-    #     val_entropies = [entropies[i] for i in val_idx]
-    #
-    #     # In synthetic mode, training and tracking datasets are the same
-    #     combined_premises = train_premises
-    #     combined_hypotheses = train_hypotheses
-    #     combined_labels = train_labels
-    #     combined_example_ids = train_example_ids
-    #     combined_entropies: List[Optional[float]] = list(train_entropies)
-    #
-    #     # Tracking dataset is the same as training dataset
-    #     tracking_premises = train_premises
-    #     tracking_hypotheses = train_hypotheses
-    #     tracking_labels = train_labels
-    #     tracking_example_ids = train_example_ids
-    #     tracking_entropies = train_entropies
-    #
-    #     print(f"  Synthetic train: {len(train_premises)}, val: {len(val_premises)}")
-    #
-    # else:
-    #     # ------------------------------------------------------------- #
-    #     # Real mode: SNLI for training + ChaosNLI for tracking
-    #     # ------------------------------------------------------------- #
-    #     print("Step 1: Loading data...")
-    #
-    #     # 1a. Load ChaosNLI data (with entropy annotations)
-    #     chaosnli = _load_chaosnli_data(args)
-    #     cn_premises = chaosnli["premises"]
-    #     cn_hypotheses = chaosnli["hypotheses"]
-    #     cn_example_ids = chaosnli["example_ids"]
-    #     cn_labels = chaosnli["majority_labels"]
-    #     cn_entropies = chaosnli["entropies"]
-    #     cn_train_idx = chaosnli["train_indices"]
-    #     cn_val_idx = chaosnli["val_indices"]
-    #
-    #     # Extract ChaosNLI train and val splits
-    #     tracking_premises = [cn_premises[i] for i in cn_train_idx]
-    #     tracking_hypotheses = [cn_hypotheses[i] for i in cn_train_idx]
-    #     tracking_labels = [cn_labels[i] for i in cn_train_idx]
-    #     tracking_example_ids = [cn_example_ids[i] for i in cn_train_idx]
-    #     tracking_entropies = [cn_entropies[i] for i in cn_train_idx]
-    #
-    #     val_premises = [cn_premises[i] for i in cn_val_idx]
-    #     val_hypotheses = [cn_hypotheses[i] for i in cn_val_idx]
-    #     val_labels = [cn_labels[i] for i in cn_val_idx]
-    #     val_example_ids = [cn_example_ids[i] for i in cn_val_idx]
-    #     val_entropies = [cn_entropies[i] for i in cn_val_idx]
-    #
-    #     print(f"  ChaosNLI train: {len(tracking_premises)}, val: {len(val_premises)}")
-    #
-    #     # 1b. Load SNLI training data (the bulk of the training set)
-    #     snli = _load_snli_data(n_examples=args.snli_size, seed=args.seed)
-    #     snli_premises = snli["premises"]
-    #     snli_hypotheses = snli["hypotheses"]
-    #     snli_labels = snli["labels"]
-    #     snli_example_ids = [f"snli_{i}" for i in range(len(snli_premises))]
-    #
-    #     print(f"  SNLI train: {len(snli_premises)}")
-    #
-    #     # 1c. Combine SNLI + ChaosNLI into one training dataset
-    #     # ChaosNLI examples have real entropies; SNLI examples have None
-    #     combined_premises = list(snli_premises) + tracking_premises
-    #     combined_hypotheses = list(snli_hypotheses) + tracking_hypotheses
-    #     combined_labels = list(snli_labels) + tracking_labels
-    #     combined_example_ids = snli_example_ids + tracking_example_ids
-    #     combined_entropies: List[Optional[float]] = (
-    #         [None] * len(snli_premises) + list(tracking_entropies)
-    #     )
-    #
-    #     print(f"  Combined training set: {len(combined_premises)} examples")
-    #     print(f"    SNLI-only (no tracking): {len(snli_premises)}")
-    #     print(f"    ChaosNLI (tracked):      {len(tracking_premises)}")
-    #
-    # # ------------------------------------------------------------------ #
-    # # Step 2: Create data loaders
-    # # ------------------------------------------------------------------ #
-    # print("\nStep 2: Creating data loaders...")
-    #
-    # # Training dataset: full combined set (SNLI + ChaosNLI)
-    # train_dataset = NLIDataset(
-    #     premises=combined_premises,
-    #     hypotheses=combined_hypotheses,
-    #     labels=combined_labels,
-    #     example_ids=combined_example_ids,
-    #     entropies=combined_entropies,
-    #     tokenizer=tokenizer,
-    #     max_length=args.max_length,
-    # )
-    #
-    # # Tracking dataset: ChaosNLI train examples only (for efficient tracking passes)
-    # tracking_dataset = ChaosNLIDataset(
-    #     premises=tracking_premises,
-    #     hypotheses=tracking_hypotheses,
-    #     labels=tracking_labels,
-    #     example_ids=tracking_example_ids,
-    #     entropies=tracking_entropies,
-    #     tokenizer=tokenizer,
-    #     max_length=args.max_length,
-    # )
-    #
-    # # Validation dataset: ChaosNLI val examples
-    # val_dataset = ChaosNLIDataset(
-    #     premises=val_premises,
-    #     hypotheses=val_hypotheses,
-    #     labels=val_labels,
-    #     example_ids=val_example_ids,
-    #     entropies=val_entropies,
-    #     tokenizer=tokenizer,
-    #     max_length=args.max_length,
-    # )
-    #
-    # # MPS-specific data loading settings: no multiprocessing, no pinned memory
-    # use_mps = device == "mps"
-    # train_loader = DataLoader(
-    #     train_dataset,
-    #     batch_size=args.batch_size,
-    #     shuffle=True,
-    #     num_workers=0 if use_mps else 2,
-    #     pin_memory=not use_mps,
-    #     drop_last=False,
-    # )
-    # tracking_loader = DataLoader(
-    #     tracking_dataset,
-    #     batch_size=args.eval_batch_size,
-    #     shuffle=False,
-    #     num_workers=0 if use_mps else 2,
-    #     pin_memory=not use_mps,
-    # )
-    # val_loader = DataLoader(
-    #     val_dataset,
-    #     batch_size=args.eval_batch_size,
-    #     shuffle=False,
-    #     num_workers=0 if use_mps else 2,
-    #     pin_memory=not use_mps,
-    # )
-    #
-    # print(f"  Train batches:    {len(train_loader)} (combined SNLI + ChaosNLI)")
-    # print(f"  Tracking batches: {len(tracking_loader)} (ChaosNLI only)")
-    # print(f"  Val batches:      {len(val_loader)}")
-    #
-    # # ------------------------------------------------------------------ #
-    # # Step 3: Create model
-    # # ------------------------------------------------------------------ #
-    # print("\nStep 3: Creating LoRA model...")
-    #
-    # model = create_lora_model(
-    #     model_name=args.model_name,
-    #     num_labels=3,
-    #     rank=args.rank,
-    #     lora_alpha=2 * args.rank,
-    #     lora_dropout=0.05,
-    # )
-    #
-    # # ------------------------------------------------------------------ #
-    # # Step 4: Initialize tracker (ChaosNLI examples only)
-    # # ------------------------------------------------------------------ #
-    # print("\nStep 4: Initializing temporal tracker...")
-    #
-    # tracker = TemporalTracker(loss_threshold=args.loss_threshold)
-    #
-    # # Pre-register ONLY ChaosNLI training examples (they have entropy)
-    # tracker.register_examples(
-    #     example_ids=tracking_example_ids,
-    #     true_labels=tracking_labels,
-    #     annotation_entropies=tracking_entropies,
-    # )
-    #
-    # print(f"  Registered {len(tracking_example_ids)} ChaosNLI examples in tracker.")
-    #
-    # # ------------------------------------------------------------------ #
-    # # Step 5: Compute class weights from combined training labels
-    # # ------------------------------------------------------------------ #
-    # print("\nStep 5: Computing class weights...")
-    #
-    # all_train_labels = torch.tensor(combined_labels, dtype=torch.long)
-    # label_counts = torch.bincount(all_train_labels, minlength=3).float()
-    # class_weights = (1.0 / label_counts.clamp(min=1))
-    # class_weights = class_weights / class_weights.sum() * len(class_weights)
-    # print(f"  Label distribution: {label_counts.tolist()}")
-    # print(f"  Class weights: {class_weights.tolist()}")
-    #
-    # # ------------------------------------------------------------------ #
-    # # Step 6: Train with tracking
-    # # ------------------------------------------------------------------ #
-    # print("\nStep 6: Training with per-example tracking...")
-    #
-    # history = train_with_tracking(
-    #     model=model,
-    #     train_loader=train_loader,
-    #     tracking_loader=tracking_loader,
-    #     val_loader=val_loader,
-    #     tracker=tracker,
-    #     n_epochs=args.epochs,
-    #     learning_rate=args.learning_rate,
-    #     eval_every_n_steps=args.eval_every_n_steps,
-    #     device=device,
-    #     max_grad_norm=1.0,
-    #     class_weights=class_weights,
-    # )
-    #
+
+
+
+
+    # ------------------------------------------------------------------ #
+    # Step 3: Create model
+    # ------------------------------------------------------------------ #
+    print("\nStep 3: Creating LoRA model...")
+
+    model = create_lora_model(
+        model_name="bert-base-uncased" ,
+        num_labels=4,
+        rank=4,
+        lora_alpha=8,
+        lora_dropout=0.05,
+    )
+
+
+
+    # ------------------------------------------------------------------ #
+    # Step 6: Train with tracking
+    # ------------------------------------------------------------------ #
+    print("\nStep 6: Training with per-example tracking...")
+
+    history = train_with_tracking(
+        model=model,
+        train_loader=train_dataloader,
+
+        val_loader=eval_dataloader,
+
+        n_epochs=5,
+        learning_rate=2.0e-5,
+        eval_every_n_steps=100,
+
+        max_grad_norm=1.0,
+        #class_weights=class_weights,
+    )
+    print(history)
+
     # # ------------------------------------------------------------------ #
     # # Step 7: Compute correlations (three metrics)
     # # ------------------------------------------------------------------ #
