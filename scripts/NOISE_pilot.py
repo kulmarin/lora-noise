@@ -40,109 +40,6 @@ from src.utils.seed import set_seed
 
 from src.utils.mydataloader import *
 
-# --------------------------------------------------------------------------- #
-# Datasets
-# --------------------------------------------------------------------------- #
-
-class NLIDataset(Dataset):
-    """PyTorch Dataset for NLI fine-tuning (combined SNLI + ChaosNLI).
-
-    Each example provides tokenized premise-hypothesis pairs, the label,
-    and optionally an example_id and entropy (for ChaosNLI examples).
-    SNLI-only examples have entropy=None and synthetic example_ids.
-    """
-
-    def __init__(
-        self,
-        premises: List[str],
-        hypotheses: List[str],
-        labels: List[int],
-        example_ids: List[str],
-        entropies: List[Optional[float]],
-        tokenizer: Any,
-        max_length: int = 128,
-    ) -> None:
-        self.premises = premises
-        self.hypotheses = hypotheses
-        self.labels = labels
-        self.example_ids = example_ids
-        self.entropies = entropies
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-
-    def __len__(self) -> int:
-        return len(self.premises)
-
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
-        encoding = self.tokenizer(
-            self.premises[idx],
-            self.hypotheses[idx],
-            max_length=self.max_length,
-            padding="max_length",
-            truncation=True,
-            return_tensors="pt",
-        )
-        item = {
-            "input_ids": encoding["input_ids"].squeeze(0),
-            "attention_mask": encoding["attention_mask"].squeeze(0),
-            "labels": torch.tensor(self.labels[idx], dtype=torch.long),
-            "example_id": self.example_ids[idx],
-        }
-        # Entropy is only present for ChaosNLI examples
-        if self.entropies[idx] is not None:
-            item["entropy"] = torch.tensor(self.entropies[idx], dtype=torch.float32)
-        else:
-            item["entropy"] = torch.tensor(float("nan"), dtype=torch.float32)
-        return item
-
-
-class ChaosNLIDataset(Dataset):
-    """PyTorch Dataset wrapping ONLY ChaosNLI examples for tracking passes.
-
-    This dataset is used exclusively for the tracking DataLoader --
-    computing per-example losses for the subset of examples that have
-    entropy annotations. This avoids wasting time on the ~20K SNLI-only
-    examples during tracking passes.
-    """
-
-    def __init__(
-        self,
-        premises: List[str],
-        hypotheses: List[str],
-        labels: List[int],
-        example_ids: List[str],
-        entropies: List[float],
-        tokenizer: Any,
-        max_length: int = 128,
-    ) -> None:
-        self.premises = premises
-        self.hypotheses = hypotheses
-        self.labels = labels
-        self.example_ids = example_ids
-        self.entropies = entropies
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-
-    def __len__(self) -> int:
-        return len(self.premises)
-
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
-        encoding = self.tokenizer(
-            self.premises[idx],
-            self.hypotheses[idx],
-            max_length=self.max_length,
-            padding="max_length",
-            truncation=True,
-            return_tensors="pt",
-        )
-        return {
-            "input_ids": encoding["input_ids"].squeeze(0),
-            "attention_mask": encoding["attention_mask"].squeeze(0),
-            "labels": torch.tensor(self.labels[idx], dtype=torch.long),
-            "example_id": self.example_ids[idx],
-            "entropy": torch.tensor(self.entropies[idx], dtype=torch.float32),
-        }
-
 
 # --------------------------------------------------------------------------- #
 # Model creation
@@ -211,7 +108,7 @@ def create_lora_model(
 # Training with per-example tracking
 # --------------------------------------------------------------------------- #
 
-def train_with_tracking(
+def train_peft_wrapped_model(
     model: nn.Module,
     train_loader: DataLoader,
     val_loader: DataLoader,
@@ -299,7 +196,7 @@ def train_with_tracking(
         )
 
         for batch in pbar:
-            print(batch)
+            #print(batch)
             input_ids = batch["input_ids"].to("cpu")
             attention_mask = batch["attention_mask"].to("cpu")
             labels = batch["noisy_label"].to("cpu")
@@ -359,7 +256,7 @@ def _evaluate(
     for batch in data_loader:
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
-        labels = batch["labels"].to(device)
+        labels = batch["noisy_label"].to(device)
 
         outputs = model(input_ids=input_ids, attention_mask=attention_mask)
         loss = loss_fn(outputs.logits, labels)
@@ -379,103 +276,6 @@ def _evaluate(
 # Analysis functions
 # --------------------------------------------------------------------------- #
 
-def compute_learning_times(
-    tracker: TemporalTracker,
-    threshold: float = 0.693,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Extract learning times and entropies from tracker.
-
-    Args:
-        tracker: Trained TemporalTracker with recorded losses.
-        threshold: Loss threshold for "learned" (default: -log(0.5)).
-
-    Returns:
-        (example_ids, learning_times, entropies) as parallel arrays.
-        learning_times is np.inf for unlearned examples.
-    """
-    ids = []
-    times = []
-    entropies = []
-
-    for eid, record in tracker.records.items():
-        t = tracker.get_learning_time(eid, threshold=threshold)
-        ids.append(eid)
-        times.append(float(t) if t is not None else np.inf)
-        entropies.append(
-            record.annotation_entropy if record.annotation_entropy is not None else np.nan
-        )
-
-    return np.array(ids), np.array(times), np.array(entropies)
-
-
-def compute_aulc(
-    tracker: TemporalTracker,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Compute Area Under the Loss Curve (AULC) for each example.
-
-    AULC is a continuous measure of learning speed that uses the full loss
-    trajectory rather than a single threshold crossing. Lower AULC = the
-    model learned this example faster/better.
-
-    Uses the mean loss across all tracked steps (equivalent to normalized
-    trapezoidal integral with uniform spacing).
-
-    Returns:
-        (example_ids, aulc_values, entropies) as parallel arrays.
-    """
-    ids = []
-    aulcs = []
-    entropies = []
-
-    for eid, record in tracker.records.items():
-        losses = record.losses
-        # Filter out NaN values
-        valid_losses = [l for l in losses if not (isinstance(l, float) and np.isnan(l))]
-        if len(valid_losses) < 2:
-            ids.append(eid)
-            aulcs.append(np.nan)
-            entropies.append(
-                record.annotation_entropy if record.annotation_entropy is not None else np.nan
-            )
-            continue
-
-        # Mean loss across all tracked steps
-        aulc = float(np.mean(valid_losses))
-
-        ids.append(eid)
-        aulcs.append(aulc)
-        entropies.append(
-            record.annotation_entropy if record.annotation_entropy is not None else np.nan
-        )
-
-    return np.array(ids), np.array(aulcs), np.array(entropies)
-
-
-def compute_final_loss(
-    tracker: TemporalTracker,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Extract final-checkpoint loss and entropy for each example.
-
-    Returns:
-        (example_ids, final_losses, entropies) as parallel arrays.
-    """
-    ids = []
-    final_losses = []
-    entropies = []
-
-    for eid, record in tracker.records.items():
-        losses = record.losses
-        # Get last non-NaN loss
-        valid_losses = [l for l in losses if not (isinstance(l, float) and np.isnan(l))]
-        final_loss = valid_losses[-1] if valid_losses else np.nan
-
-        ids.append(eid)
-        final_losses.append(final_loss)
-        entropies.append(
-            record.annotation_entropy if record.annotation_entropy is not None else np.nan
-        )
-
-    return np.array(ids), np.array(final_losses), np.array(entropies)
 
 
 def compute_spearman_correlation(
@@ -496,121 +296,6 @@ def compute_spearman_correlation(
     rho, p = stats.spearmanr(learning_times[valid], entropies[valid])
     return float(rho), float(p)
 
-
-# --------------------------------------------------------------------------- #
-# Hero figure: per-category loss curves
-# --------------------------------------------------------------------------- #
-
-def plot_hero_figure(
-    tracker: TemporalTracker,
-    category_names: List[str],
-    tracking_steps: List[int],
-    output_path: Path,
-    title_suffix: str = "",
-    loss_threshold: float = 1.0,
-) -> None:
-    """Generate the hero figure: per-category mean loss curves over training.
-
-    This is Figure 1 in the paper, showing that clean examples (low H_i)
-    have losses that drop earlier than contested examples (high H_i).
-
-    Args:
-        tracker: Trained TemporalTracker.
-        category_names: Names of entropy categories.
-        tracking_steps: Global step numbers corresponding to each tracking index.
-        output_path: Where to save the figure.
-        title_suffix: Optional text to append to the title.
-    """
-    # Group examples by entropy category
-    categories = {}
-    for eid, record in tracker.records.items():
-        h = record.annotation_entropy
-        if h is None:
-            continue
-        # Categorize using the same thresholds as data prep
-        if h < 0.4:
-            cat = "clean"
-        elif h < 0.7:
-            cat = "ambiguous"
-        else:
-            cat = "contested"
-
-        if cat not in categories:
-            categories[cat] = []
-        categories[cat].append(eid)
-
-    mean_losses = tracker.get_mean_loss_by_category(categories)
-
-    # Compute SEM for CI bands
-    sem_losses = {}
-    for cat_name, eids in categories.items():
-        trajectories = []
-        for eid in eids:
-            if eid in tracker.records and len(tracker.records[eid].losses) > 0:
-                trajectories.append(tracker.records[eid].losses)
-        if trajectories:
-            max_len = max(len(t) for t in trajectories)
-            padded = np.full((len(trajectories), max_len), np.nan)
-            for i, t in enumerate(trajectories):
-                padded[i, : len(t)] = t
-            std = np.nanstd(padded, axis=0, ddof=1)
-            n_valid = np.maximum(np.sum(~np.isnan(padded), axis=0).astype(float), 1.0)
-            sem_losses[cat_name] = std / np.sqrt(n_valid)
-
-    fig, ax = plt.subplots(figsize=(7, 4.5))
-
-    colors = {"clean": "#2166AC", "ambiguous": "#F4A582", "contested": "#B2182B"}
-    markers = {"clean": "o", "ambiguous": "s", "contested": "^"}
-
-    for cat_name in ["clean", "ambiguous", "contested"]:
-        if cat_name not in mean_losses or len(mean_losses[cat_name]) == 0:
-            continue
-
-        losses = mean_losses[cat_name]
-        n_steps = len(losses)
-        steps = tracking_steps[:n_steps] if len(tracking_steps) >= n_steps else list(range(n_steps))
-        n_examples = len(categories.get(cat_name, []))
-        color = colors.get(cat_name, "gray")
-
-        ax.plot(
-            steps,
-            losses,
-            color=color,
-            marker=markers.get(cat_name, "."),
-            markersize=4,
-            linewidth=2,
-            label=f"{cat_name} (n={n_examples})",
-            alpha=0.9,
-        )
-
-        # 95% CI band
-        if cat_name in sem_losses:
-            sem = sem_losses[cat_name][:n_steps]
-            ci_lower = losses - 1.96 * sem
-            ci_upper = losses + 1.96 * sem
-            ax.fill_between(steps, ci_lower, ci_upper, color=color, alpha=0.15)
-
-    # Loss threshold reference line
-    ax.axhline(
-        loss_threshold, color="gray", linestyle="--", linewidth=1.0, alpha=0.6,
-        label=f"threshold $\\theta = {loss_threshold:.2f}$",
-    )
-
-    ax.set_xlabel("Training Step", fontsize=11)
-    ax.set_ylabel("Mean Cross-Entropy Loss", fontsize=11)
-    ax.set_title(
-        f"Per-Category Learning Dynamics{title_suffix}", fontsize=12
-    )
-    ax.legend(fontsize=9, loc="upper right")
-    ax.tick_params(labelsize=9)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-
-    plt.tight_layout()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved hero figure to {output_path}")
 
 
 # --------------------------------------------------------------------------- #
@@ -673,94 +358,12 @@ def detect_device(requested: Optional[str] = None) -> str:
     return "cpu"
 
 
-def _load_chaosnli_data(
-    args: argparse.Namespace,
-) -> Dict[str, Any]:
-    """Load ChaosNLI data from pre-processed JSON or directly.
-
-    Returns a dict with keys: premises, hypotheses, example_ids,
-    majority_labels, entropies, train_indices, val_indices.
-    """
-    data_path = args.data_path
-    if data_path is None:
-        default_path = str(PROJECT_ROOT / "results" / "data" / "train_data.json")
-        if Path(default_path).exists():
-            data_path = default_path
-
-    if data_path is not None:
-        print(f"  Loading ChaosNLI data from {data_path}...")
-        with open(data_path, "r") as f:
-            data = json.load(f)
-
-        # Validate that this is real data, not synthetic leftovers
-        metadata = data.get("metadata", {})
-        if metadata.get("synthetic", False):
-            raise RuntimeError(
-                f"The pre-processed data at {data_path} was generated from "
-                f"SYNTHETIC data (metadata.synthetic=True). This means Phase 0 "
-                f"silently fell back to synthetic data.\n\n"
-                f"Fix: re-run Phase 0 with real ChaosNLI data:\n"
-                f"  python scripts/01_prepare_data.py\n"
-                f"or pass --synthetic explicitly if you intend to use synthetic data."
-            )
-
-        # Spot-check for placeholder text that indicates synthetic data
-        sample_premises = data["premises"][:5]
-        if all(p.startswith("premise_") for p in sample_premises):
-            raise RuntimeError(
-                f"The pre-processed data at {data_path} contains placeholder "
-                f"text (e.g., 'premise_0'). This is synthetic data, not real "
-                f"ChaosNLI examples.\n\n"
-                f"Fix: re-run Phase 0 with real ChaosNLI data:\n"
-                f"  python scripts/01_prepare_data.py"
-            )
-
-        return {
-            "premises": data["premises"],
-            "hypotheses": data["hypotheses"],
-            "example_ids": data["example_ids"],
-            "majority_labels": data["majority_labels"],
-            "entropies": data["entropies"],
-            "train_indices": data["train_indices"],
-            "val_indices": data["val_indices"],
-        }
-
-    # No pre-processed data available -- load directly from ChaosNLI
-    print("  No pre-processed ChaosNLI data found. Loading ChaosNLI directly...")
-    from src.data.chaosnli import load_chaosnli
-    from src.data.annotation_entropy import categorize_by_entropy
-
-    data = load_chaosnli(subset="snli")
-    entropies = [
-        compute_annotation_entropy_from_distribution(dist)
-        for dist in data["label_distributions"]
-    ]
-    cats = categorize_by_entropy(np.array(entropies), thresholds=[0.4, 0.7])
-    n = len(data["premises"])
-
-    from sklearn.model_selection import StratifiedShuffleSplit
-    splitter = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=args.seed)
-    train_idx, val_idx = next(splitter.split(np.arange(n), cats.categories))
-
-    return {
-        "premises": data["premises"],
-        "hypotheses": data["hypotheses"],
-        "example_ids": data["example_ids"],
-        "majority_labels": data["majority_labels"].tolist(),
-        "entropies": entropies,
-        "train_indices": train_idx.tolist(),
-        "val_indices": val_idx.tolist(),
-    }
-
-
-
-
 def main() -> None:
 
     print("Step 1: Loading data...")
 
     train_dataloader, noise_dataset = create_dataloader(
-        file_path="../data/samples40000trainMed.csv",
+        file_path="../data/samples400trainMed.csv",
         tokenizer_path="bert-base-uncased",
         batch_size=32,
         max_length=256,
@@ -769,7 +372,7 @@ def main() -> None:
     print(noise_dataset.__len__())
 
     eval_dataloader, noise_dataset = create_dataloader(
-        file_path="../data/samples10000valMed.csv",
+        file_path="../data/samples100valMed.csv",
         tokenizer_path="bert-base-uncased",
         batch_size=32,
         max_length=256,
@@ -805,20 +408,34 @@ def main() -> None:
         lora_dropout=0.05,
     )
 
+    trainable = 0
+    total = 0
 
+    for param in model.parameters():
+        total += param.numel()
+        if param.requires_grad:
+            trainable += param.numel()
+
+    print("Trainable:", trainable)
+    print("Total:", total)
+    print("Percentage:", 100 * trainable / total)
+
+    print("CUDA available:", torch.cuda.is_available())
+    print("Model device:", next(model.parameters()).device)
+    print("Number of batches:", len(train_dataloader))
 
     # ------------------------------------------------------------------ #
     # Step 6: Train with tracking
     # ------------------------------------------------------------------ #
     print("\nStep 6: Training with per-example tracking...")
 
-    history = train_with_tracking(
+    history = train_peft_wrapped_model(
         model=model,
         train_loader=train_dataloader,
 
         val_loader=eval_dataloader,
 
-        n_epochs=5,
+        n_epochs=2,
         learning_rate=2.0e-5,
         eval_every_n_steps=100,
 
