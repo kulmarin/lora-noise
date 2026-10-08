@@ -199,9 +199,9 @@ def train_peft_wrapped_model(
 
         for batch in progress_bar:
             #print(batch)
-            input_ids = batch["input_ids"].to("cpu")
-            attention_mask = batch["attention_mask"].to("cpu")
-            labels = batch[noisy_or_clean_label].to("cpu")
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            labels = batch[noisy_or_clean_label].to(device)
 
             outputs = peft_model(input_ids=input_ids, attention_mask=attention_mask)
             loss = loss_fn_mean(outputs.logits, labels)
@@ -223,7 +223,7 @@ def train_peft_wrapped_model(
         #------------------------------------#
 
         train_loss = np.mean(epoch_losses)
-        val_loss, val_acc = _evaluate(peft_model, val_loader, loss_fn_mean, "cpu")
+        val_loss, val_acc = _evaluate(peft_model, val_loader, loss_fn_mean, device)
         history["train_loss"].append(float(train_loss))
         history["val_loss"].append(float(val_loss))
         history["val_accuracy"].append(float(val_acc))
@@ -370,6 +370,8 @@ def main() -> None:
     # Step 1: Create dataloader
     # ------------------------------------------------------------------ #
 
+    device = detect_device()
+
     print("Step 1: Loading data...")
 
     train_dataloader = create_dataloader(
@@ -436,6 +438,7 @@ def main() -> None:
         train_loader=train_dataloader,
         val_loader=val_dataloader,
         noisy_or_clean_label="noise_label",
+        device=device,
         n_epochs=2,
         learning_rate=2.0e-5,
         max_grad_norm=1.0,
@@ -459,6 +462,7 @@ def main() -> None:
         train_loader=train_dataloader,
         val_loader=val_dataloader,
         noisy_or_clean_label="clean_label",
+        device=device,
         n_epochs=2,
         learning_rate=2.0e-5,
         max_grad_norm=1.0,
