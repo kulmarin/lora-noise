@@ -115,6 +115,7 @@ def train_peft_wrapped_model(
     noisy_or_clean_label: str,
     n_epochs: int = 5,
     learning_rate: float = 2e-5,
+    device: str = "cpu",
     max_grad_norm: float = 1.0,
 
     class_weights: Optional[torch.Tensor] = None,
@@ -139,7 +140,7 @@ def train_peft_wrapped_model(
         Dictionary with training history: per-step metrics, final metrics.
     """
 
-    peft_model = peft_model.to("cpu")
+    peft_model = peft_model.to( device)
     optimizer = torch.optim.AdamW(
         [p for p in peft_model.parameters() if p.requires_grad],
         lr=learning_rate,
@@ -160,7 +161,7 @@ def train_peft_wrapped_model(
 
     # Class-weighted loss for training (handles label imbalance)
     if class_weights is not None:
-        class_weights = class_weights.to("cpu")
+        class_weights = class_weights.to(device)
         print(f"  Class weights: {class_weights.tolist()}")
 
     loss_fn = nn.CrossEntropyLoss(reduction="none")  # per-example losses (unweighted, for tracking)
@@ -411,10 +412,24 @@ def main() -> None:
         lora_alpha=8,
         lora_dropout=0.05,
     )
+
     # ------------------------------------------------------------------ #
-    # Step 3: Train
+    # Step 3: Class weights...
     # ------------------------------------------------------------------ #
-    print("\nStep 3: Training on noisy labels")
+    print("\nStep 3: Computing class weights...")
+
+    combined_groups=train_dataloader.dataset.groups
+
+    all_train_groups = torch.tensor(combined_groups, dtype=torch.long)
+    label_counts = torch.bincount(all_train_groups, minlength=3).float()
+    class_weights = (1.0 / label_counts.clamp(min=1))
+    class_weights = class_weights / class_weights.sum() * len(class_weights)
+    print(f"  Label distribution: {label_counts.tolist()}")
+    print(f"  Class weights: {class_weights.tolist()}")
+    # ------------------------------------------------------------------ #
+    # Step 4: Train
+    # ------------------------------------------------------------------ #
+    print("\nStep 4: Training on noisy labels")
 
     history = train_peft_wrapped_model(
         peft_model=wrapped_model,
@@ -424,13 +439,13 @@ def main() -> None:
         n_epochs=2,
         learning_rate=2.0e-5,
         max_grad_norm=1.0,
-        #class_weights=class_weights,
+        class_weights=class_weights,
     )
     print(history)
 
 
 
-    print("\nStep 3: Training on clean labels")
+    print("\nStep 5: Training on clean labels")
 
     wrapped_model = create_lora_wrapped_base_model(
         base_model_name="bert-base-uncased",
@@ -447,7 +462,7 @@ def main() -> None:
         n_epochs=2,
         learning_rate=2.0e-5,
         max_grad_norm=1.0,
-        # class_weights=class_weights,
+        class_weights=class_weights,
     )
     print(history)
 
