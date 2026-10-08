@@ -94,4 +94,4 @@ def create_dataloader(file_path, tokenizer_path, batch_size, max_length=256, shu
         pin_memory=True
     )
     
-    return dataloader, dataset
+    return dataloader#, dataset

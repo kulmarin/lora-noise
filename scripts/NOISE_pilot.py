@@ -21,6 +21,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib
+from accelerate.test_utils.examples import clean_lines
+from huggingface_hub.utils.tqdm import progress_bar_states
+from sympy.parsing.sympy_parser import EvaluateFalseTransformer
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -45,8 +49,8 @@ from src.utils.mydataloader import *
 # Model creation
 # --------------------------------------------------------------------------- #
 
-def create_lora_model(
-    model_name: str = "roberta-base",
+def create_lora_wrapped_base_model(
+    base_model_name: str = "roberta-base",
     num_labels: int = 3,
     rank: int = 4,
     lora_alpha: Optional[int] = None,
@@ -60,7 +64,7 @@ def create_lora_model(
     rate across ranks).
 
     Args:
-        model_name: HuggingFace model name.
+        base_model_name: HuggingFace model name.
         num_labels: Number of output classes (3 for NLI).
         rank: LoRA rank r.
         lora_alpha: LoRA scaling. Defaults to 2 * rank.
@@ -80,7 +84,7 @@ def create_lora_model(
         target_modules = ["query", "value"]
 
     base_model = AutoModelForSequenceClassification.from_pretrained(
-        model_name, num_labels=num_labels,
+        base_model_name, num_labels=num_labels,
     )
 
     lora_config = LoraConfig(
@@ -104,27 +108,24 @@ def create_lora_model(
     return model
 
 
-# --------------------------------------------------------------------------- #
-# Training with per-example tracking
-# --------------------------------------------------------------------------- #
-
 def train_peft_wrapped_model(
-    model: nn.Module,
+    peft_model: nn.Module,
     train_loader: DataLoader,
     val_loader: DataLoader,
+    noisy_or_clean_label: str,
     n_epochs: int = 5,
     learning_rate: float = 2e-5,
-    eval_every_n_steps: int = 100,
     max_grad_norm: float = 1.0,
+
     class_weights: Optional[torch.Tensor] = None,
 ) -> Dict[str, Any]:
-    """Train model while recording per-example losses at regular intervals.
+    """Train LoRA + base model.
 
     The training loop uses the full dataset (NOISY AG)
     for gradient updates.
 
     Args:
-        model: PEFT model to train.
+        peft_model: PEFT model to train.
         train_loader: Training data loader .
         val_loader: Validation data loader.
         n_epochs: Number of training epochs.
@@ -138,9 +139,9 @@ def train_peft_wrapped_model(
         Dictionary with training history: per-step metrics, final metrics.
     """
 
-    model = model.to("cpu")
+    peft_model = peft_model.to("cpu")
     optimizer = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad],
+        [p for p in peft_model.parameters() if p.requires_grad],
         lr=learning_rate,
         weight_decay=0.01,
     )
@@ -182,30 +183,30 @@ def train_peft_wrapped_model(
     # Initial tracking pass (step 0, before any training)
     print("  Recording initial per-example losses (step 0)...")
 
-    model.eval()
-    model.train()
+    peft_model.eval()
+    peft_model.train()
 
     for epoch in range(n_epochs):
-        model.train()
+        peft_model.train()
         epoch_losses = []
 
-        pbar = tqdm(
+        progress_bar = tqdm(
             train_loader,
             desc=f"  Epoch {epoch+1}/{n_epochs}",
             leave=False,
         )
 
-        for batch in pbar:
+        for batch in progress_bar:
             #print(batch)
             input_ids = batch["input_ids"].to("cpu")
             attention_mask = batch["attention_mask"].to("cpu")
-            labels = batch["noisy_label"].to("cpu")
+            labels = batch[noisy_or_clean_label].to("cpu")
 
-            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            outputs = peft_model(input_ids=input_ids, attention_mask=attention_mask)
             loss = loss_fn_mean(outputs.logits, labels)
 
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            torch.nn.utils.clip_grad_norm_(peft_model.parameters(), max_grad_norm)
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
@@ -213,12 +214,15 @@ def train_peft_wrapped_model(
             epoch_losses.append(loss.item())
             global_step += 1
 
-            pbar.set_postfix(loss=f"{loss.item():.4f}")
+            progress_bar.set_postfix(loss=f"{loss.item():.4f}")
 
 
-        # Record epoch-level metrics
+        #------------------------------------#
+        # Evaluate
+        #------------------------------------#
+
         train_loss = np.mean(epoch_losses)
-        val_loss, val_acc = _evaluate(model, val_loader, loss_fn_mean, "cpu")
+        val_loss, val_acc = _evaluate(peft_model, val_loader, loss_fn_mean, "cpu")
         history["train_loss"].append(float(train_loss))
         history["val_loss"].append(float(val_loss))
         history["val_accuracy"].append(float(val_acc))
@@ -238,8 +242,8 @@ def train_peft_wrapped_model(
 
 @torch.no_grad()
 def _evaluate(
-    model: nn.Module,
-    data_loader: DataLoader,
+    peft_model: nn.Module,
+    val_data_loader: DataLoader,
     loss_fn: nn.Module,
     device: str,
 ) -> Tuple[float, float]:
@@ -248,25 +252,25 @@ def _evaluate(
     Returns:
         (mean_loss, accuracy).
     """
-    model.eval()
+    peft_model.eval()
     total_loss = 0.0
     correct = 0
     total = 0
 
-    for batch in data_loader:
+    for batch in val_data_loader:
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
-        labels = batch["noisy_label"].to(device)
+        clean_labels = batch["clean_labels"].to(device)
 
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-        loss = loss_fn(outputs.logits, labels)
+        outputs = peft_model(input_ids=input_ids, attention_mask=attention_mask)
+        loss = loss_fn(outputs.logits, clean_labels)
 
-        total_loss += loss.item() * labels.size(0)
+        total_loss += loss.item() * clean_labels.size(0)
         preds = outputs.logits.argmax(dim=-1)
-        correct += (preds == labels).sum().item()
-        total += labels.size(0)
+        correct += (preds == clean_labels).sum().item()
+        total += clean_labels.size(0)
 
-    model.train()
+    peft_model.train()
     avg_loss = total_loss / max(total, 1)
     accuracy = correct / max(total, 1)
     return avg_loss, accuracy
@@ -298,9 +302,7 @@ def compute_spearman_correlation(
 
 
 
-# --------------------------------------------------------------------------- #
-# Main
-# --------------------------------------------------------------------------- #
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -357,30 +359,37 @@ def detect_device(requested: Optional[str] = None) -> str:
         return "cuda"
     return "cpu"
 
+# --------------------------------------------------------------------------- #
+# Main
+# --------------------------------------------------------------------------- #
 
 def main() -> None:
 
+    # ------------------------------------------------------------------ #
+    # Step 1: Create dataloader
+    # ------------------------------------------------------------------ #
+
     print("Step 1: Loading data...")
 
-    train_dataloader, noise_dataset = create_dataloader(
+    train_dataloader = create_dataloader(
         file_path="../data/samples400trainMed.csv",
         tokenizer_path="bert-base-uncased",
         batch_size=32,
         max_length=256,
         shuffle=True
     )
-    print(noise_dataset.__len__())
+    print(train_dataloader.dataset.__len__())
 
-    eval_dataloader, noise_dataset = create_dataloader(
+    val_dataloader = create_dataloader(
         file_path="../data/samples100valMed.csv",
         tokenizer_path="bert-base-uncased",
         batch_size=32,
         max_length=256,
         shuffle=True
     )
-    print(noise_dataset.__len__())
+    print(val_dataloader.dataset.__len__())
 
-    test_dataloader, noise_dataset = create_dataloader(
+    test_dataloader = create_dataloader(
         file_path="../data/samplesTest.csv",
         tokenizer_path="bert-base-uncased",
         batch_size=32,
@@ -388,191 +397,61 @@ def main() -> None:
         shuffle=True
     )
 
-    print(noise_dataset.__len__())
-
-
-
-
-
+    print(test_dataloader.dataset.__len__())
 
     # ------------------------------------------------------------------ #
-    # Step 3: Create model
+    # Step 2: Create model
     # ------------------------------------------------------------------ #
-    print("\nStep 3: Creating LoRA model...")
+    print("\nStep 2: Creating LoRA model...")
 
-    model = create_lora_model(
-        model_name="bert-base-uncased" ,
+    wrapped_model = create_lora_wrapped_base_model(
+        base_model_name="bert-base-uncased" ,
         num_labels=4,
         rank=4,
         lora_alpha=8,
         lora_dropout=0.05,
     )
-
-    trainable = 0
-    total = 0
-
-    for param in model.parameters():
-        total += param.numel()
-        if param.requires_grad:
-            trainable += param.numel()
-
-    print("Trainable:", trainable)
-    print("Total:", total)
-    print("Percentage:", 100 * trainable / total)
-
-    print("CUDA available:", torch.cuda.is_available())
-    print("Model device:", next(model.parameters()).device)
-    print("Number of batches:", len(train_dataloader))
-
     # ------------------------------------------------------------------ #
-    # Step 6: Train with tracking
+    # Step 3: Train
     # ------------------------------------------------------------------ #
-    print("\nStep 6: Training with per-example tracking...")
+    print("\nStep 3: Training on noisy labels")
 
     history = train_peft_wrapped_model(
-        model=model,
+        peft_model=wrapped_model,
         train_loader=train_dataloader,
-
-        val_loader=eval_dataloader,
-
+        val_loader=val_dataloader,
+        noisy_or_clean_label="noise_label",
         n_epochs=2,
         learning_rate=2.0e-5,
-        eval_every_n_steps=100,
-
         max_grad_norm=1.0,
         #class_weights=class_weights,
     )
     print(history)
 
-    # # ------------------------------------------------------------------ #
-    # # Step 7: Compute correlations (three metrics)
-    # # ------------------------------------------------------------------ #
-    # print("\nStep 7: Computing entropy correlations...")
-    #
-    # # 7a. AULC (primary metric -- continuous, uses full trajectory)
-    # _, aulc_arr, aulc_ent = compute_aulc(tracker)
-    # valid_aulc = np.isfinite(aulc_arr) & np.isfinite(aulc_ent)
-    # if valid_aulc.sum() >= 3:
-    #     rho_aulc, p_aulc = stats.spearmanr(aulc_arr[valid_aulc], aulc_ent[valid_aulc])
-    # else:
-    #     rho_aulc, p_aulc = 0.0, 1.0
-    # print(f"  [AULC]       Spearman rho = {rho_aulc:+.4f}, p = {p_aulc:.2e}  (n={valid_aulc.sum()})")
-    #
-    # # 7b. Final loss (sanity check -- do clean examples end with lower loss?)
-    # _, final_arr, final_ent = compute_final_loss(tracker)
-    # valid_final = np.isfinite(final_arr) & np.isfinite(final_ent)
-    # if valid_final.sum() >= 3:
-    #     rho_final, p_final = stats.spearmanr(final_arr[valid_final], final_ent[valid_final])
-    # else:
-    #     rho_final, p_final = 0.0, 1.0
-    # print(f"  [Final loss] Spearman rho = {rho_final:+.4f}, p = {p_final:.2e}  (n={valid_final.sum()})")
-    #
-    # # 7c. Threshold crossing (legacy metric -- for comparison)
-    # ids_arr, times_arr, entropies_arr = compute_learning_times(
-    #     tracker, threshold=args.loss_threshold,
-    # )
-    # rho, p_value = compute_spearman_correlation(times_arr, entropies_arr)
-    # n_learned = np.isfinite(times_arr).sum()
-    # n_unlearned = (~np.isfinite(times_arr)).sum()
-    # print(f"  [Threshold]  Spearman rho = {rho:+.4f}, p = {p_value:.2e}  (learned={n_learned}/{len(times_arr)})")
-    #
-    # # Use AULC as the primary gate metric
-    # primary_rho = rho_aulc
-    # primary_p = p_aulc
-    #
-    # # ------------------------------------------------------------------ #
-    # # Step 8: Save tracker
-    # # ------------------------------------------------------------------ #
-    # print("\nStep 8: Saving tracker and results...")
-    #
-    # tracker_path = output_dir / f"pilot_r{args.rank}_s{args.seed}.json"
-    # tracker.save(tracker_path)
-    # print(f"  Saved tracker to {tracker_path}")
-    #
-    # # Save pilot results summary
-    # pilot_results = {
-    #     "rank": args.rank,
-    #     "seed": args.seed,
-    #     "epochs": args.epochs,
-    #     "learning_rate": args.learning_rate,
-    #     "loss_threshold": args.loss_threshold,
-    #     "eval_every_n_steps": args.eval_every_n_steps,
-    #     "snli_size": args.snli_size,
-    #     "n_train_combined": len(combined_premises),
-    #     "n_train_chaosnli": len(tracking_premises),
-    #     "n_val_chaosnli": len(val_premises),
-    #     "spearman_aulc_rho": rho_aulc,
-    #     "spearman_aulc_p": p_aulc,
-    #     "spearman_final_loss_rho": rho_final,
-    #     "spearman_final_loss_p": p_final,
-    #     "spearman_threshold_rho": rho,
-    #     "spearman_threshold_p": p_value,
-    #     "n_learned": int(n_learned),
-    #     "n_unlearned": int(n_unlearned),
-    #     "n_total": len(times_arr),
-    #     "final_train_loss": history["train_loss"][-1] if history["train_loss"] else None,
-    #     "final_val_loss": history["val_loss"][-1] if history["val_loss"] else None,
-    #     "final_val_accuracy": history["val_accuracy"][-1] if history["val_accuracy"] else None,
-    #     "tracking_steps": history["tracking_steps"],
-    #     "train_loss_history": history["train_loss"],
-    #     "val_loss_history": history["val_loss"],
-    #     "val_accuracy_history": history["val_accuracy"],
-    # }
-    #
-    # results_path = output_dir / f"pilot_results_r{args.rank}_s{args.seed}.json"
-    # with open(results_path, "w") as f:
-    #     json.dump(pilot_results, f, indent=2)
-    # print(f"  Saved results to {results_path}")
-    #
-    # # ------------------------------------------------------------------ #
-    # # Step 9: Generate hero figure
-    # # ------------------------------------------------------------------ #
-    # print("\nStep 9: Generating hero figure...")
-    #
-    # plot_hero_figure(
-    #     tracker=tracker,
-    #     category_names=["clean", "ambiguous", "contested"],
-    #     tracking_steps=history["tracking_steps"],
-    #     output_path=figure_dir / f"hero_loss_curves_r{args.rank}_s{args.seed}.png",
-    #     title_suffix=f" (rank={args.rank}, seed={args.seed})",
-    #     loss_threshold=args.loss_threshold,
-    # )
-    #
-    # # ------------------------------------------------------------------ #
-    # # Gate check (uses AULC as primary metric)
-    # # ------------------------------------------------------------------ #
-    # elapsed = time.time() - t0
-    # print(f"\n{'=' * 70}")
-    # print(f"Phase 1 complete ({elapsed:.1f}s)")
-    #
-    # # For AULC: positive rho means higher entropy -> higher mean loss (slower learning)
-    # # For final loss: positive rho means higher entropy -> higher final loss
-    # # Both are the predicted direction.
-    # best_val_acc = max(history["val_accuracy"]) if history["val_accuracy"] else 0.0
-    # print(f"\n  Best val accuracy: {best_val_acc:.4f}")
-    # print(f"  Final val accuracy: {history['val_accuracy'][-1]:.4f}" if history["val_accuracy"] else "")
-    #
-    # if primary_rho > 0.10 and primary_p < 0.05:
-    #     print(f"\nPHASE 1 GATE PASSED: AULC Spearman rho = {primary_rho:.3f} (p = {primary_p:.3e})")
-    #     print("  Positive correlation: higher entropy -> higher mean loss (slower learning).")
-    #     print("  This confirms the temporal separation hypothesis.")
-    #     print("  Proceed to Phase 2 (rank sweep).")
-    # else:
-    #     print(f"\nPHASE 1 GATE FAILED: AULC Spearman rho = {primary_rho:.3f} (p = {primary_p:.3e})")
-    #     print("  Diagnostics:")
-    #     print(f"    AULC rho > 0.10?     {'YES' if primary_rho > 0.10 else 'NO'} (rho = {primary_rho:+.4f})")
-    #     print(f"    AULC p < 0.05?       {'YES' if primary_p < 0.05 else 'NO'} (p = {primary_p:.2e})")
-    #     print(f"    Final-loss rho:      {rho_final:+.4f} (p = {p_final:.2e})")
-    #     print(f"    Threshold rho:       {rho:+.4f} (p = {p_value:.2e})")
-    #     print(f"    Best val accuracy:   {best_val_acc:.4f}")
-    #     if best_val_acc < 0.55:
-    #         print("    Model may not be learning the task. Check training config.")
-    #     if primary_rho < 0:
-    #         print("    Negative correlation: contested examples have LOWER mean loss.")
-    #         print("    This contradicts the hypothesis.")
-    #     print("  Do NOT proceed to Phase 2 without diagnosing the failure.")
-    #
-    # print(f"{'=' * 70}")
+
+
+    print("\nStep 3: Training on clean labels")
+
+    wrapped_model = create_lora_wrapped_base_model(
+        base_model_name="bert-base-uncased",
+        num_labels=4,
+        rank=4,
+        lora_alpha=8,
+        lora_dropout=0.05,
+    )
+    history = train_peft_wrapped_model(
+        peft_model=wrapped_model,
+        train_loader=train_dataloader,
+        val_loader=val_dataloader,
+        noisy_or_clean_label="clean_label",
+        n_epochs=2,
+        learning_rate=2.0e-5,
+        max_grad_norm=1.0,
+        # class_weights=class_weights,
+    )
+    print(history)
+
+
 
 
 if __name__ == "__main__":
