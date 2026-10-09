@@ -261,7 +261,7 @@ def _evaluate(
     for batch in val_data_loader:
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
-        clean_labels = batch["clean_labels"].to(device)
+        clean_labels = batch["clean_label"].to(device)
 
         outputs = peft_model(input_ids=input_ids, attention_mask=attention_mask)
         loss = loss_fn(outputs.logits, clean_labels)
@@ -420,10 +420,10 @@ def main() -> None:
     # ------------------------------------------------------------------ #
     print("\nStep 3: Computing class weights...")
 
-    combined_groups=train_dataloader.dataset.groups
+    combined_labels=train_dataloader.dataset.clean_labels
 
-    all_train_groups = torch.tensor(combined_groups, dtype=torch.long)
-    label_counts = torch.bincount(all_train_groups, minlength=3).float()
+    all_train_labels = torch.tensor(combined_labels, dtype=torch.long)
+    label_counts = torch.bincount(all_train_labels, minlength=3).float()
     class_weights = (1.0 / label_counts.clamp(min=1))
     class_weights = class_weights / class_weights.sum() * len(class_weights)
     print(f"  Label distribution: {label_counts.tolist()}")
@@ -437,7 +437,7 @@ def main() -> None:
         peft_model=wrapped_model,
         train_loader=train_dataloader,
         val_loader=val_dataloader,
-        noisy_or_clean_label="noise_label",
+        noisy_or_clean_label="noisy_label",
         device=device,
         n_epochs=2,
         learning_rate=2.0e-5,
