@@ -34,10 +34,10 @@ from src.utils.seed import set_seed
 # Import shared functions from pilot script
 # --------------------------------------------------------------------------- #
 
-def _import_pilot():
+def _import_lora():
     """Import functions from the pilot experiment script."""
     spec = importlib.util.spec_from_file_location(
-        "pilot", str(PROJECT_ROOT / "scripts" / "NOISE_pilot.py"),
+        "lora", str(PROJECT_ROOT / "scripts" / "NOISE_lora.py"),
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -71,7 +71,7 @@ def build_full_base_model(
 # --------------------------------------------------------------------------- #
 
 def main() -> None:
-    pilot = _import_pilot()
+    pilot = _import_lora()
     args = pilot.parse_args()
 
 

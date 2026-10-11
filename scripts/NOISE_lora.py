@@ -316,7 +316,7 @@ def detect_device(requested: Optional[str] = None) -> str:
 # Main
 # --------------------------------------------------------------------------- #
 
-def main() -> None:
+def whole_training() -> Dict[str, Any]:
     args = parse_args()
 
     # ------------------------------------------------------------------ #
@@ -399,29 +399,11 @@ def main() -> None:
     )
 
     print(history)
+    return history
 
-    ''' print("\nStep 5: Training on clean labels")
 
-    wrapped_model = create_lora_wrapped_base_model(
-        base_model_name="bert-base-uncased",
-        num_labels=4,
-        rank=4,
-        lora_alpha=8,
-        lora_dropout=0.05,
-    )
-    history = train_peft_wrapped_model(
-        peft_model=wrapped_model,
-        train_loader=train_dataloader,
-        val_loader=val_dataloader,
-        noisy_or_clean_label="clean_label",
-        device=device,
-        n_epochs=2,
-        learning_rate=2.0e-5,
-        max_grad_norm=1.0,
-        class_weights=class_weights,
-    )
-    print(history)'''
-
+def main():
+    whole_training()
 
 
 
