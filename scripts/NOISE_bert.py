@@ -8,7 +8,6 @@ import importlib.util
 import json
 import os
 import sys
-import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -31,7 +30,7 @@ from src.utils.seed import set_seed
 
 
 # --------------------------------------------------------------------------- #
-# Import shared functions from pilot script
+# Import shared functions from NOISE-lora script
 # --------------------------------------------------------------------------- #
 
 def _import_lora():
@@ -45,7 +44,7 @@ def _import_lora():
 
 
 # -----------------------------------------------------------------------------
-# 3. Model Creation (Full Model, Unfrozen)
+# Model Creation (Full Model, Unfrozen)
 # -----------------------------------------------------------------------------
 def build_full_base_model(
         model_name: str, num_labels:int
@@ -111,20 +110,6 @@ def main() -> None:
     print(test_dataloader.dataset.__len__())
 
     # ------------------------------------------------------------------ #
-    # Step 3: Class weights...
-    # ------------------------------------------------------------------ #
-    print("\nStep 3: Computing class weights...")
-
-
-    combined_labels = getattr(train_dataloader.dataset, args.target_label_col + "s")
-    all_train_labels = torch.tensor(combined_labels, dtype=torch.long)
-    label_counts = torch.bincount(all_train_labels, minlength= args.num_labels).float()
-    class_weights = (1.0 / label_counts.clamp(min=1))
-    class_weights = class_weights / class_weights.sum() * len(class_weights)
-    print(f"  Label distribution: {label_counts.tolist()}")
-    print(f"  Class weights: {class_weights.tolist()}")
-
-    # ------------------------------------------------------------------ #
     # Create base-model
     # ------------------------------------------------------------------ #
 
@@ -143,8 +128,7 @@ def main() -> None:
         device=device,
         n_epochs=args.epochs,
         learning_rate=args.learning_rate,
-        max_grad_norm=args.max_grad_norm,
-        class_weights=class_weights,
+        max_grad_norm=args.max_grad_norm
     )
     print(history)
 

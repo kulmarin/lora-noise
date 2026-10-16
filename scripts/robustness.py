@@ -16,6 +16,10 @@ def _import_bert():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+# --------------------------------------------------------------------------- #
+# Main
+# --------------------------------------------------------------------------- #
+
 
 def main():
     bert = _import_bert()
@@ -33,7 +37,7 @@ def main():
    #     "learning_rates": [],
    # }
 
-    robustness = history_lora_noisy["val_accuracy"][-1] - history_lora_clean["val_accuracy"][-1]
+    robustness = history_lora_noisy["test_accuracy"][-1] - history_lora_clean["test_accuracy"][-1]
     print ("robustness in execution  with LoRA between noise and clean data: ",robustness)
 
 if __name__ == "__main__":

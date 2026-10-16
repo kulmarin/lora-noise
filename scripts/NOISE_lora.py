@@ -7,7 +7,6 @@ import json
 import os
 import math
 import sys
-import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -30,7 +29,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.annotation_entropy import compute_annotation_entropy_from_distribution
-from src.training.temporal_tracker import TemporalTracker
 from src.utils.seed import set_seed
 
 from src.utils.mydataloader import *
@@ -41,29 +39,27 @@ from src.utils.mydataloader import *
 # --------------------------------------------------------------------------- #
 
 def create_lora_wrapped_base_model(
-    base_model_name: str = "roberta-base",
-    num_labels: int = 3,
+    base_model_name: str = "bert-base-uncased",
+    num_labels: int = 4,
     rank: int = 4,
     lora_alpha: Optional[int] = None,
     lora_dropout: float = 0.05,
     target_modules: Optional[List[str]] = None,
 ) -> nn.Module:
-    """Create RoBERTa + LoRA model for sequence classification.
+    """Create BERT + LoRA model for sequence classification.
 
-    Uses the PEFT library to apply LoRA adapters. Alpha defaults to 2*rank
-    per the experimental protocol (scaling that preserves effective learning
-    rate across ranks).
+    Uses the PEFT to apply LoRA adapters.
 
     Args:
         base_model_name: HuggingFace model name.
-        num_labels: Number of output classes (3 for NLI).
+        num_labels: Number of output classification targets (default: 4).
         rank: LoRA rank r.
         lora_alpha: LoRA scaling. Defaults to 2 * rank.
-        lora_dropout: Dropout in LoRA layers.
-        target_modules: Which attention matrices to adapt.
+        lora_dropout: Dropout probability applied to LoRA adapter inputs.
+        target_modules: Target modules to adapt.
 
     Returns:
-        PEFT-wrapped model.
+        PEFT-wrapped sequence classification model.
     """
     from peft import LoraConfig, TaskType, get_peft_model
     from transformers import AutoModelForSequenceClassification
@@ -103,12 +99,12 @@ def train_any_model(
     model: nn.Module,
     train_loader: DataLoader,
     val_loader: DataLoader,
+    test_loader: DataLoader,
     noisy_or_clean_label: str,
     n_epochs: int = 5,
     learning_rate: float = 2e-5,
     device: str = "cpu",
-    max_grad_norm: float = 1.0,
-    class_weights: Optional[torch.Tensor] = None,
+    max_grad_norm: float = 1.0
 ) -> Dict[str, Any]:
     """Train LoRA + base model or only base model.
 
@@ -121,10 +117,8 @@ def train_any_model(
         val_loader: Validation data loader.
         n_epochs: Number of training epochs.
         learning_rate: Optimizer learning rate.
-        eval_every_n_steps: Record per-example losses every N steps.
         device: Device string ("mps", "cuda", "cpu").
         max_grad_norm: Gradient clipping norm.
-        class_weights: Pre-computed class weights for weighted CE loss.
 
     Returns:
         Dictionary with training history: per-step metrics, final metrics.
@@ -149,12 +143,8 @@ def train_any_model(
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
-    # Class-weighted loss for training (handles label imbalance)
-    if class_weights is not None:
-        class_weights = class_weights.to(device)
-        print(f"  Class weights: {class_weights.tolist()}")
 
-    loss_fn_mean = nn.CrossEntropyLoss(weight=class_weights, reduction="mean")
+    loss_fn_mean = nn.CrossEntropyLoss(weight=None, reduction="mean")
 
     history = {
         "train_loss": [],
@@ -181,14 +171,10 @@ def train_any_model(
 
 
         for batch in progress_bar:
-            #print(batch)
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             labels = batch[noisy_or_clean_label].to(device)
 
-            # --------------------------
-            # Train per batch
-            # -------------------------
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
             loss = loss_fn_mean(outputs.logits, labels)
 
@@ -203,28 +189,54 @@ def train_any_model(
 
             progress_bar.set_postfix(loss=f"{loss.item():.4f}")
 
-
-        #------------------------------------#
-        # Validate per epoch
-        #------------------------------------#
+            # Training loss for this epoch
 
         train_loss = np.mean(epoch_losses)
-        val_loss, val_acc = validate(model, val_loader, loss_fn_mean, device)
+
+        # Validation: once per epoch, using the same label column as training
+        val_loss, val_accuracy = validate(
+            peft_model=model,
+            val_data_loader=val_loader,
+            loss_fn=loss_fn_mean,
+            device=device,
+            label_column=noisy_or_clean_label
+        )
         history["train_loss"].append(float(train_loss))
         history["val_loss"].append(float(val_loss))
-        history["val_accuracy"].append(float(val_acc))
+        history["val_accuracy"].append(float(val_accuracy))
         history["learning_rates"].append(float(scheduler.get_last_lr()[0]))
 
-        print(
-            f"  Epoch {epoch+1}/{n_epochs}: "
-            f"train_loss={train_loss:.4f}, "
-            f"val_loss={val_loss:.4f}, "
-            f"val_acc={val_acc:.4f}"
-        )
+        print ("epoch validation accuracy: ",val_accuracy)
+        print("epoch validation loss: ", val_loss)
+        print("epoch training loss: ", train_loss)
 
+        #after the final epoch
+
+    test_loss, test_accuracy = validate(
+        peft_model=model,
+        val_data_loader=test_loader,
+        loss_fn=loss_fn_mean,
+        device=device,
+        label_column="clean_label",
+    )
+    final_val_accuracy = history["val_accuracy"][-1]
+    accuracy_difference = final_val_accuracy - test_accuracy
+
+    history["test_loss"] = [float(test_loss)]
+    history["test_accuracy"] = [float(test_accuracy)]
+    history["val_test_accuracy_difference"] = [float(
+        accuracy_difference
+    )]
+
+    print(f"Final validation accuracy: {final_val_accuracy:.4f}")
+    print(f"Final test loss: {test_loss:.4f}")
+    print(f"Final test accuracy: {test_accuracy:.4f}")
+    print(
+        "Validation - test accuracy: "
+        f"{accuracy_difference:.4f}"
+    )
 
     return history
-
 
 
 @torch.no_grad()
@@ -233,6 +245,7 @@ def validate(
     val_data_loader: DataLoader,
     loss_fn: nn.Module,
     device: str,
+    label_column: str,
 ) -> Tuple[float, float]:
     """Evaluate model on validation set.
 
@@ -244,23 +257,26 @@ def validate(
     correct = 0
     total = 0
 
-    for batch in val_data_loader:
-        input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
-        clean_labels = batch["clean_label"].to(device)
+    with torch.no_grad():
+        for batch in val_data_loader:
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            #clean_labels = batch["clean_label"].to(device)
+            labels = batch[label_column].to(device)
 
-        outputs = peft_model(input_ids=input_ids, attention_mask=attention_mask)
-        loss = loss_fn(outputs.logits, clean_labels)
+            outputs = peft_model(input_ids=input_ids, attention_mask=attention_mask)
+            loss = loss_fn(outputs.logits, labels)
+            batch_size = labels.size(0)
+            total_loss += loss.item() * batch_size
 
-        total_loss += loss.item() * clean_labels.size(0)
-        preds = outputs.logits.argmax(dim=-1)
-        correct += (preds == clean_labels).sum().item()
-        total += clean_labels.size(0)
+            preds = outputs.logits.argmax(dim=-1)
+            correct += (preds == labels).sum().item()
+            total += batch_size
 
-    peft_model.train()
-    avg_loss = total_loss / max(total, 1)
-    accuracy = correct / max(total, 1)
-    return avg_loss, accuracy
+        #peft_model.train()
+        avg_loss = total_loss / max(total, 1)
+        accuracy = correct / max(total, 1)
+        return avg_loss, accuracy
 
 
 def parse_args() -> argparse.Namespace:
@@ -275,7 +291,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-data-path", type=str, default="../data/samples400trainMed.csv",
                         help="Path to train CSV.")
     parser.add_argument("--val-data-path", type=str, default="../data/samples100valMed.csv", help="Path to val CSV.")
-    parser.add_argument("--test-data-path", type=str, default="../data/samplesTest.csv", help="Path to test CSV.")
+    parser.add_argument("--test-data-path", type=str, default="../data/samplesTest76.csv", help="Path to test CSV.")
     parser.add_argument("--target-label-col", type=str, default="noisy_label", choices=["noisy_label", "clean_label"],
                         help="Dataset column for training targets.")
 
@@ -313,7 +329,7 @@ def detect_device(requested: Optional[str] = None) -> str:
     return "cpu"
 
 # --------------------------------------------------------------------------- #
-# Main
+# Training
 # --------------------------------------------------------------------------- #
 
 def whole_training() -> Dict[str, Any]:
@@ -369,19 +385,6 @@ def whole_training() -> Dict[str, Any]:
     )
 
     # ------------------------------------------------------------------ #
-    # Step 3: Class weights...
-    # ------------------------------------------------------------------ #
-    print("\nStep 3: Computing class weights...")
-
-
-    combined_labels = getattr(train_dataloader.dataset, args.target_label_col + "s")
-    all_train_labels = torch.tensor(combined_labels, dtype=torch.long)
-    label_counts = torch.bincount(all_train_labels, minlength= args.num_labels).float()
-    class_weights = (1.0 / label_counts.clamp(min=1))
-    class_weights = class_weights / class_weights.sum() * len(class_weights)
-    print(f"  Label distribution: {label_counts.tolist()}")
-    print(f"  Class weights: {class_weights.tolist()}")
-    # ------------------------------------------------------------------ #
     # Step 4: Train
     # ------------------------------------------------------------------ #
     print("\nStep 4: Training on noisy or clean labels: ",args.target_label_col)
@@ -390,12 +393,12 @@ def whole_training() -> Dict[str, Any]:
         model=wrapped_model,
         train_loader=train_dataloader,
         val_loader=val_dataloader,
+        test_loader=test_dataloader,
         noisy_or_clean_label=args.target_label_col,
         device=device,
         n_epochs=args.epochs,
         learning_rate=args.learning_rate,
-        max_grad_norm=args.max_grad_norm,
-        class_weights=class_weights,
+        max_grad_norm=args.max_grad_norm
     )
 
     print(history)
