@@ -2,45 +2,14 @@
 
 
 from __future__ import annotations
-
-import argparse
-import importlib.util
-import json
-import os
-import sys
-from pathlib import Path
-from typing import Any, Dict, List, Optional
-
-import numpy as np
-import torch
-from scipy import stats
-from torch.utils.data import DataLoader
-import argparse
-from typing import Optional, Tuple
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-
-from src.training.temporal_tracker import TemporalTracker
 from src.utils.seed import set_seed
+import torch.nn as nn
+from transformers import AutoModelForSequenceClassification
+from src.utils import importer
 
 
-# --------------------------------------------------------------------------- #
-# Import shared functions from NOISE-lora script
-# --------------------------------------------------------------------------- #
-
-def _import_lora():
-    """Import functions from the pilot experiment script."""
-    spec = importlib.util.spec_from_file_location(
-        "lora", str(PROJECT_ROOT / "scripts" / "NOISE_lora.py"),
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+#PROJECT_ROOT = Path(__file__).resolve().parent.parent
+#sys.path.insert(0, str(PROJECT_ROOT))
 
 
 # -----------------------------------------------------------------------------
@@ -70,18 +39,18 @@ def build_full_base_model(
 # --------------------------------------------------------------------------- #
 
 def main() -> None:
-    pilot = _import_lora()
-    args = pilot.parse_args()
+    lora = importer._import_lora()
+    args = lora.parse_args()
+    set_seed(args.seed)
 
-
-    device = pilot.detect_device(args.device)
+    device = lora.detect_device(args.device)
 
     # ------------------------------------------------------------------ #
     # Load data
     # ------------------------------------------------------------------ #
     print("Loading data...")
 
-    train_dataloader = pilot.create_dataloader(
+    train_dataloader = lora.create_dataloader(
         file_path=args.train_data_path,
         tokenizer_path="bert-base-uncased",
         batch_size=args.batch_size,
@@ -90,7 +59,7 @@ def main() -> None:
     )
     print(train_dataloader.dataset.__len__())
 
-    val_dataloader = pilot.create_dataloader(
+    val_dataloader = lora.create_dataloader(
         file_path=args.val_data_path,
         tokenizer_path="bert-base-uncased",
         batch_size=args.batch_size,
@@ -99,7 +68,7 @@ def main() -> None:
     )
     print(val_dataloader.dataset.__len__())
 
-    test_dataloader = pilot.create_dataloader(
+    test_dataloader = lora.create_dataloader(
         file_path=args.test_data_path,
         tokenizer_path="bert-base-uncased",
         batch_size=args.batch_size,
@@ -120,10 +89,11 @@ def main() -> None:
     # Run full-tuning
     # ------------------------------------------------------------------ #
 
-    history= pilot.train_any_model(
+    history= lora.train_any_model(
         model=model,
         train_loader=train_dataloader,
         val_loader=val_dataloader,
+        test_loader=test_dataloader,
         noisy_or_clean_label=args.target_label_col,
         device=device,
         n_epochs=args.epochs,

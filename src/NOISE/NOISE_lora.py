@@ -23,14 +23,8 @@ import torch.nn as nn
 from scipy import stats
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
-
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-
 from src.data.annotation_entropy import compute_annotation_entropy_from_distribution
 from src.utils.seed import set_seed
-
 from src.utils.mydataloader import *
 
 
@@ -146,7 +140,7 @@ def train_any_model(
 
     loss_fn_mean = nn.CrossEntropyLoss(weight=None, reduction="mean")
 
-    history = {
+    history: Dict[str, Any] = {
         "train_loss": [],
         "val_loss": [],
         "val_accuracy": [],
@@ -222,11 +216,9 @@ def train_any_model(
     final_val_accuracy = history["val_accuracy"][-1]
     accuracy_difference = final_val_accuracy - test_accuracy
 
-    history["test_loss"] = [float(test_loss)]
-    history["test_accuracy"] = [float(test_accuracy)]
-    history["val_test_accuracy_difference"] = [float(
-        accuracy_difference
-    )]
+    history["test_loss"] = test_loss
+    history["test_accuracy"] = test_accuracy
+    history["val_test_accuracy_difference"] = accuracy_difference
 
     print(f"Final validation accuracy: {final_val_accuracy:.4f}")
     print(f"Final test loss: {test_loss:.4f}")
@@ -288,10 +280,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-labels", type=int, default=4, help="Number of target classes.")
 
     # Data Paths & Labels
-    parser.add_argument("--train-data-path", type=str, default="../data/samples400trainMed.csv",
+    parser.add_argument("--train-data-path", type=str, default="../../data/samples400trainMed.csv",
                         help="Path to train CSV.")
-    parser.add_argument("--val-data-path", type=str, default="../data/samples100valMed.csv", help="Path to val CSV.")
-    parser.add_argument("--test-data-path", type=str, default="../data/samplesTest76.csv", help="Path to test CSV.")
+    parser.add_argument("--val-data-path", type=str, default="../../data/samples100valMed.csv", help="Path to val CSV.")
+    parser.add_argument("--test-data-path", type=str, default="../../data/samplesTest76.csv", help="Path to test CSV.")
     parser.add_argument("--target-label-col", type=str, default="noisy_label", choices=["noisy_label", "clean_label"],
                         help="Dataset column for training targets.")
 
@@ -334,6 +326,7 @@ def detect_device(requested: Optional[str] = None) -> str:
 
 def whole_training() -> Dict[str, Any]:
     args = parse_args()
+    set_seed(args.seed)
 
     # ------------------------------------------------------------------ #
     # Step 1: Create dataloader
