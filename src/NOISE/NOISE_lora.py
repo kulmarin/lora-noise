@@ -289,7 +289,7 @@ def parse_args() -> argparse.Namespace:
 
     # LoRA Hyperparameters
     parser.add_argument("--rank", type=int, default=4, help="LoRA rank (default: 4).")
-    parser.add_argument("--lora-alpha", type=int, default=16, help="LoRA alpha scaling parameter.")
+    parser.add_argument("--lora-alpha", type=int, default=8, help="LoRA alpha scaling parameter.")
     parser.add_argument("--lora-dropout", type=float, default=0.05, help="Dropout probability for LoRA adapters.")
 
     # Training Optimization
@@ -326,11 +326,8 @@ def detect_device(requested: Optional[str] = None) -> str:
 
 def whole_training() -> Dict[str, Any]:
     args = parse_args()
+    print(args)
     set_seed(args.seed)
-
-    # ------------------------------------------------------------------ #
-    # Step 1: Create dataloader
-    # ------------------------------------------------------------------ #
 
     device = detect_device()
 
@@ -365,7 +362,7 @@ def whole_training() -> Dict[str, Any]:
     print(test_dataloader.dataset.__len__())
 
     # ------------------------------------------------------------------ #
-    # Step 2: Create model
+    # Create model
     # ------------------------------------------------------------------ #
     print("\nStep 2: Creating LoRA model...")
 

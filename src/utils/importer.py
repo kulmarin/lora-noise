@@ -7,7 +7,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 
 # --------------------------------------------------------------------------- #
-# Import shared functions from pilot script
+# Import shared functions from NOISE-bert script
 # --------------------------------------------------------------------------- #
 
 def _import_bert():

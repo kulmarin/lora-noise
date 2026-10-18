@@ -15,7 +15,7 @@ def main():
     sys.argv.extend(["--target-label-col", "clean_label"])
     history_lora_clean = lora.whole_training()
 
-    robustness = history_lora_noisy["test_accuracy"][-1] - history_lora_clean["test_accuracy"][-1]
+    robustness = history_lora_clean["test_accuracy"]-history_lora_noisy["test_accuracy"]
     print ("robustness in execution  with LoRA between noise and clean data: ",robustness)
 
 

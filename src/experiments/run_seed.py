@@ -12,7 +12,6 @@ def main():
     lora = importer._import_lora()
 
     for seed in SEEDS:
-        # Temporarily override sys.argv to inject the current seed
         cli_args = ["NOISE-lora.py", "--seed", str(seed), "--target-label-col", "noisy_label"]
         with patch.object(sys, "argv", cli_args):
             print(f"\n--- Running Seed {seed} ---")
