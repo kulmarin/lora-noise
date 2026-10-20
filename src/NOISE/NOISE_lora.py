@@ -398,7 +398,19 @@ def whole_training() -> Dict[str, Any]:
         max_grad_norm=args.max_grad_norm
     )
 
-    print(history)
+    #print(history)
+    return history
+
+def pseudotraining ():
+    history = {
+        "train_loss": [1,1,1,1,1],
+        "val_loss": [1,1,1,1,1],
+        "val_accuracy": [1,1,1,1,1],
+        "learning_rates": [1,1,1,1,1],
+        "test_loss" :1,
+        "test_accuracy": 1 ,
+        "val_test_accuracy_difference":0
+    }
     return history
 
 
