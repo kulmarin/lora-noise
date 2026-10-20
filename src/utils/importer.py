@@ -23,8 +23,6 @@ def _import_bert():
 # --------------------------------------------------------------------------- #
 
 def _import_lora():
-    """Import functions from the pilot experiment script."""
-    print (PROJECT_ROOT)
     spec = importlib.util.spec_from_file_location(
         "lora", str(PROJECT_ROOT / "NOISE" / "NOISE_lora.py"),
     )

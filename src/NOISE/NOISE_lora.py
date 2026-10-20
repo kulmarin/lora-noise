@@ -23,7 +23,6 @@ import torch.nn as nn
 from scipy import stats
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
-from src.data.annotation_entropy import compute_annotation_entropy_from_distribution
 from src.utils.seed import set_seed
 from src.utils.mydataloader import *
 
@@ -271,10 +270,13 @@ def validate(
         return avg_loss, accuracy
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args():# -> argparse.Namespace:#, argparse.ArgumentParser:
+
+
     parser = argparse.ArgumentParser(
         description="Fine-tune BERT with LoRA under noisy labels"
     )
+
     # Model & Tokenizer
     parser.add_argument("--model-name", type=str, default="bert-base-uncased", help="Base model name or path.")
     parser.add_argument("--num-labels", type=int, default=4, help="Number of target classes.")
@@ -306,8 +308,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default=None, help="Device (auto-detected if omitted).")
     parser.add_argument("--figure-dir", type=str, default=None, help="Directory for output plots/figures.")
 
-
-    return parser.parse_args()
+    args = parser.parse_args()
+    return args, parser
 
 
 def detect_device(requested: Optional[str] = None) -> str:
@@ -325,8 +327,13 @@ def detect_device(requested: Optional[str] = None) -> str:
 # --------------------------------------------------------------------------- #
 
 def whole_training() -> Dict[str, Any]:
-    args = parse_args()
-    print(args)
+    args, parser = parse_args()
+    print("Args that are changed from default values: ")
+    for arg_name, arg_value in vars(args).items():
+        default_value = parser.get_default(arg_name)
+        if arg_value != default_value:
+            print(f"{arg_name}: {arg_value} (default: {default_value})")
+
     set_seed(args.seed)
 
     device = detect_device()

@@ -6,7 +6,7 @@ from src.utils import importer
 
 
 def main():
-    SEEDS = [42, 43, 44]
+    SEEDS = [ 43, 44, 45]
     results = []
 
     lora = importer._import_lora()
