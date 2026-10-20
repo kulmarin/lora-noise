@@ -1,28 +1,10 @@
-"""
-Seed Utilities
-==============
-Deterministic seeding for reproducible experiments.
-"""
-
 from __future__ import annotations
-
 import os
 import random
-from typing import Optional
-
 import numpy as np
 
 
 def set_seed(seed: int = 42, deterministic_cudnn: bool = True) -> None:
-    """Set random seeds for full reproducibility.
-
-    Sets seeds for: Python random, NumPy, PyTorch (CPU + CUDA).
-
-    Args:
-        seed: The random seed value.
-        deterministic_cudnn: If True, set CuDNN to deterministic mode
-            (may reduce performance).
-    """
     random.seed(seed)
     np.random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
