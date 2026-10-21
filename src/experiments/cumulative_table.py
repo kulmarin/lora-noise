@@ -25,7 +25,8 @@ def main():
                     "--target-label-col", "noisy_label"]
             with patch.object(sys, "argv", cli_args):
                 print(f"\n--- Running noise level {noise}, seed {seed}---")
-                history = lora.pseudotraining()
+                history = lora.whole_training()
+
 
                 accuracies.append(history["test_accuracy"])
 
