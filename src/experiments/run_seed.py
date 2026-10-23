@@ -38,7 +38,7 @@ def main():
                     "--target-label-col", "noisy_label"]
         with patch.object(sys, "argv", cli_args):
             print(f"\n--- Running Seed {seed} ---")
-            history = lora.pseudotraining()
+            history = lora.whole_training()
             test_acc = history["test_accuracy"][-1] if isinstance(history["test_accuracy"], list) else history[
                 "test_accuracy"]
             results.append(history["test_accuracy"])

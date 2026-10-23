@@ -24,10 +24,10 @@ def save_robustness_to_csv(filepath: str, clean_acc: float, noisy_acc: float, ro
 def main():
     lora = importer._import_lora()
     # Train on noisy labels
-    history_lora_noisy = lora.pseudotraining()
+    history_lora_noisy = lora.whole_training()
     #Train on clean labels
     sys.argv.extend(["--target-label-col", "clean_label"])
-    history_lora_clean = lora.pseudotraining()
+    history_lora_clean = lora.whole_training()
     #Extract final accuracy
 
     noisy_acc = (

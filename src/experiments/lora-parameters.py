@@ -40,7 +40,7 @@ def main() -> None:
                     f"\n--- [{experiment}] Rank={rank}, Alpha={alpha}, "
                     f"Dropout={dropout}, Seed={seed} ---"
                 )
-                history = lora.pseudotraining()
+                history = lora.whole_training()
 
             val_acc = (history["val_accuracy"][-1]
                             if isinstance(history["val_accuracy"], list)
