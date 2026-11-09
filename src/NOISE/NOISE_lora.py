@@ -6,6 +6,8 @@ import argparse
 import math
 from typing import Any, Dict, List, Optional, Tuple
 import matplotlib
+from sympy import false
+
 matplotlib.use("Agg")
 import torch.nn as nn
 from tqdm import tqdm
@@ -25,21 +27,7 @@ def create_lora_wrapped_base_model(
     lora_dropout: float = 0.05,
     target_modules: Optional[List[str]] = None,
 ) -> nn.Module:
-    """Create BERT + LoRA model for sequence classification.
 
-    Uses the PEFT to apply LoRA adapters.
-
-    Args:
-        base_model_name: HuggingFace model name.
-        num_labels: Number of output classification targets (default: 4).
-        rank: LoRA rank r.
-        lora_alpha: LoRA scaling. Defaults to 2 * rank.
-        lora_dropout: Dropout probability applied to LoRA adapter inputs.
-        target_modules: Target modules to adapt.
-
-    Returns:
-        PEFT-wrapped sequence classification model.
-    """
     from peft import LoraConfig, TaskType, get_peft_model
     from transformers import AutoModelForSequenceClassification
 
@@ -85,23 +73,6 @@ def train_any_model(
     device: str = "cpu",
     max_grad_norm: float = 1.0
 ) -> Dict[str, Any]:
-    """Train LoRA + base model or only base model.
-
-    The training loop uses the full dataset (NOISY AG)
-    for gradient updates.
-
-    Args:
-        model: PEFT model to train.
-        train_loader: Training data loader .
-        val_loader: Validation data loader.
-        n_epochs: Number of training epochs.
-        learning_rate: Optimizer learning rate.
-        device: Device string ("mps", "cuda", "cpu").
-        max_grad_norm: Gradient clipping norm.
-
-    Returns:
-        Dictionary with training history: per-step metrics, final metrics.
-    """
 
     model = model.to(device)
     optimizer = torch.optim.AdamW(
@@ -313,6 +284,10 @@ def detect_device(requested: Optional[str] = None) -> str:
 # --------------------------------------------------------------------------- #
 
 def whole_training() -> Dict[str, Any]:
+    flag = True
+    if flag:
+        return pseudotraining()
+
     args, parser = parse_args()
     print("Args that are changed from default values: ")
     for arg_name, arg_value in vars(args).items():
