@@ -284,7 +284,7 @@ def detect_device(requested: Optional[str] = None) -> str:
 # --------------------------------------------------------------------------- #
 
 def whole_training() -> Dict[str, Any]:
-    flag = True
+    flag = False
     if flag:
         return pseudotraining()
 
