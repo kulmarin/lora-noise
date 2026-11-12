@@ -288,6 +288,10 @@ def whole_training() -> Dict[str, Any]:
     if flag:
         return pseudotraining()
 
+    # TODO read existing lora data from file
+    #lora writes args and the obtained results in file
+    #if there is no file with the same arguments, then train
+
     args, parser = parse_args()
     print("Args that are changed from default values: ")
     for arg_name, arg_value in vars(args).items():
@@ -359,6 +363,7 @@ def whole_training() -> Dict[str, Any]:
         max_grad_norm=args.max_grad_norm
     )
 
+    #TODO write history to file befor returning it
     #print(history)
     return history
 
