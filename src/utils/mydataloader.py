@@ -4,6 +4,7 @@ import pandas as pd
 import logging
 from transformers import AutoTokenizer
 import numpy as np
+import csv
 
 logger = logging.getLogger(__name__)
 
@@ -20,12 +21,40 @@ class NoiseDataset(Dataset):
             max_length: 最大序列长度
         """
         # 读取数据
-        self.df = pd.read_csv(file_path)
+        #self.df = pd.read_csv(file_path)
+
+        with open(file_path, "r", encoding="utf-8") as f:
+            # Read the first 2KB to sample the file structure
+            sample = f.read(2048)
+
+        # Use csv.Sniffer to guess the delimiter
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",\\t ")
+            delimiter = dialect.delimiter
+        except csv.Error:
+            # Fallback heuristic if Sniffer is unsure
+            if "," in sample:
+                delimiter = ","
+            elif " " in sample:
+                delimiter = " "
+            else: # "\t" in sample:
+                delimiter = "\t"
+
+        print(f"[{file_path}] Detected delimiter: {repr(delimiter)}")
+
+
+        self.df = pd.read_csv(
+            file_path,
+            sep=delimiter,  # Explicitly match your file's space delimiter
+            quotechar='"',  # Protect spaces inside quotes
+           # header=None,
+            engine="python"  # Use Python engine for robust whitespace/quote parsing
+        )
         
         self.texts = self.df['text'].values
         self.noisy_labels = self.df['label'].values
         self.clean_labels = self.df['gt'].values
-        self.groups = self.df['group'].values
+
         
         # 初始化tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
@@ -34,14 +63,12 @@ class NoiseDataset(Dataset):
         # 计算数据集统计信息
         self.num_classes = len(np.unique(self.clean_labels))
         self.noise_rate = (self.noisy_labels != self.clean_labels).mean()
-        self.group_stats = pd.Series(self.groups).value_counts().to_dict()
         
         # 记录统计信息
         logger.info(f"Dataset loaded from {file_path}")
         logger.info(f"Total samples: {len(self.df)}")
         logger.info(f"Number of classes: {self.num_classes}")
         logger.info(f"Noise rate: {self.noise_rate:.2%}")
-        logger.info(f"Group distribution: {self.group_stats}")
 
     def __len__(self):
         return len(self.df)
