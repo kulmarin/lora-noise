@@ -77,7 +77,7 @@ class NoiseDataset(Dataset):
         text = self.texts[idx]
         noisy_label = self.noisy_labels[idx]
         clean_label = self.clean_labels[idx]
-        group = self.groups[idx]
+        #group = self.groups[idx]
 
         # tokenize文本
         encoding = self.tokenizer(
@@ -93,7 +93,7 @@ class NoiseDataset(Dataset):
             'attention_mask': encoding['attention_mask'].squeeze(0),
             'noisy_label': torch.tensor(noisy_label, dtype=torch.long),
             'clean_label': torch.tensor(clean_label, dtype=torch.long),
-            'group': group,
+            #'group': group,
             'text': text,
             'sample_id': idx
         }
