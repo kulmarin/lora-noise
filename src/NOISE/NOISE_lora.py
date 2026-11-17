@@ -239,10 +239,10 @@ def parse_args():# -> argparse.Namespace:#, argparse.ArgumentParser:
     parser.add_argument("--num-labels", type=int, default=4, help="Number of target classes.")
 
     # Data Paths & Labels
-    parser.add_argument("--train-data-path", type=str, default="../../data/samples400trainMed.csv",
+    parser.add_argument("--train-data-path", type=str, default="../../data/samples40000trainMed.csv",
                         help="Path to train CSV.")
-    parser.add_argument("--val-data-path", type=str, default="../../data/samples100valMed.csv", help="Path to val CSV.")
-    parser.add_argument("--test-data-path", type=str, default="../../data/samplesTest76.csv", help="Path to test CSV.")
+    parser.add_argument("--val-data-path", type=str, default="../../data/samples10000valMed.csv", help="Path to val CSV.")
+    parser.add_argument("--test-data-path", type=str, default="../../data/samplesTest.csv", help="Path to test CSV.")
     parser.add_argument("--target-label-col", type=str, default="noisy_label", choices=["noisy_label", "clean_label"],
                         help="Dataset column for training targets.")
 
