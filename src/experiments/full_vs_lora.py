@@ -42,11 +42,7 @@ def main():
             "Full tuning:", "",
             "LoRA:"
         ])
-        # First header row
-     #   writer.writerow([
-      #      "", "", "test acc: train clean", "", "test acc: train clean – test acc: train noisy", "", "clean val acc: train clean","",
-      #      "noisy val acc: train clean – noisy val acc: train noisy"
-      #  ])
+
         writer.writerow([
             "", "mean","stddev","mean","stddev"
         ])
@@ -64,10 +60,10 @@ def main():
                        ]
             with patch.object(sys, "argv", cli_args):
                 print(
-                    f"\n--- Seed {seed}, noisy: ---"
+                    f"\n--- Experiment: Seed {seed}, Lora: ---"
                 )
                 # Train with lora
-                history_lora = lora.whole_training()
+                history_lora = lora.run_or_load_experiment()
 
             cli_args = ["NOISE-bert.py",
                         "--seed", str(seed),
@@ -77,7 +73,7 @@ def main():
                         ]
             with patch.object(sys, "argv", cli_args):
                 print(
-                    f"\n--- Seed {seed}, clean: ---"
+                    f"\n--- Experiment: Seed {seed}, Whole training: ---"
                 )
                 #Train  full bert
                 history_bert = bert.whole_training()

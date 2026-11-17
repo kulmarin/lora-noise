@@ -6,7 +6,9 @@ import argparse
 import math
 from typing import Any, Dict, List, Optional, Tuple
 import matplotlib
-from sympy import false
+import json
+from pathlib import Path
+import hashlib
 
 matplotlib.use("Agg")
 import torch.nn as nn
@@ -283,21 +285,10 @@ def detect_device(requested: Optional[str] = None) -> str:
 # Training
 # --------------------------------------------------------------------------- #
 
-def whole_training() -> Dict[str, Any]:
-    flag = False
+def whole_training(args) -> Dict[str, Any]:
+    flag = True
     if flag:
         return pseudotraining()
-
-    # TODO read existing lora data from file
-    #lora writes args and the obtained results in file
-    #if there is no file with the same arguments, then train
-
-    args, parser = parse_args()
-    print("Args that are changed from default values: ")
-    for arg_name, arg_value in vars(args).items():
-        default_value = parser.get_default(arg_name)
-        if arg_value != default_value:
-            print(f"{arg_name}: {arg_value} (default: {default_value})")
 
     set_seed(args.seed)
 
@@ -363,8 +354,6 @@ def whole_training() -> Dict[str, Any]:
         max_grad_norm=args.max_grad_norm
     )
 
-    #TODO write history to file befor returning it
-    #print(history)
     return history
 
 def pseudotraining ():
@@ -380,10 +369,44 @@ def pseudotraining ():
     return history
 
 
-def main():
-    whole_training()
+def run_or_load_experiment() -> dict:
+        #config_dict: dict, train_function,
+        args, parser = parse_args()
+        args_dict = vars(args)
+        cache_dir = "experiment_cache"
 
 
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
 
-if __name__ == "__main__":
-    main()
+        # 1. Create a deterministic filename based on the configuration arguments
+        # Sorting keys ensures {"rank": 4, "alpha": 8} produces the same hash as {"alpha": 8, "rank": 4}
+        sorted_keys = sorted(args_dict.keys())
+        config_string = "_".join(f"{k}_{args_dict[k]}" for k in sorted_keys)
+        config_hash = hashlib.md5(config_string.encode()).hexdigest()[:10]
+
+        # Human-readable prefix + hash for easy debugging in your file explorer
+        #r{args.get('rank', 4)}_a{args.get('alpha', 'none')}_d{args.get('dropout', 'none')}_seed{args.get('seed', 'none')}_{args.get('target_label_col', 'clean')}
+        filename = f"r{config_hash}.json"
+        filepath = Path(cache_dir) / filename
+
+        # 2. Check Cache
+        if filepath.exists():
+            print(f"[Cache Hit] Loading cached results from: {filename}")
+            with open(filepath, "r", encoding="utf-8") as f:
+                saved_data = json.load(f)
+            return saved_data["history"]
+
+        # 3. Cache Miss: Run Training
+        print(f"[Cache Miss] Training new model for config: {args_dict}")
+        history = whole_training(args)
+
+        # 4. Save both arguments and training history together
+        payload = {
+            "arguments": args_dict,
+            "history": history
+        }
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=4)
+
+        print(f"Saved results to: {filepath}")
+        return history

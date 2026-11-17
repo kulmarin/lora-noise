@@ -64,7 +64,7 @@ def main():
                     f"\n--- Seed {seed}, noisy: ---"
                 )
                 # Train on noisy labels
-                history_lora_noisy = lora.whole_training()
+                history_lora_noisy = lora.run_or_load_experiment()
             cli_args = ["NOISE-lora.py",
                         "--seed", str(seed),
                         "--rank", str(best_config["rank"]),
@@ -80,7 +80,7 @@ def main():
                     f"\n--- Seed {seed}, clean: ---"
                 )
                 #Train on clean labels
-                history_lora_clean = lora.whole_training()
+                history_lora_clean = lora.run_or_load_experiment()
 
             #Extract final accuracy
             noisy_test_acc.append( history_lora_noisy["test_accuracy"])
