@@ -26,7 +26,7 @@ def main():
     best_config = find_best_lora_config(lora)
     print("Best lora config is: ", best_config)
 
-    path = Path("base_table.csv")
+    path = Path("results/base_table.csv")
     path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(path, mode="w", newline="", encoding="utf-8") as f:
@@ -41,8 +41,8 @@ def main():
         ])
         # First header row
         writer.writerow([
-            "", "", "test acc: train clean", "", "test acc: train clean – test acc: train noisy", "", "clean val acc: train clean","",
-            "noisy val acc: train clean – noisy val acc: train noisy"
+            "", "", "test acc: train clean", "", "test acc: train clean minus test acc: train noisy", "", "clean val acc: train clean","",
+            "noisy val acc: train clean minus noisy val acc: train noisy"
         ])
         writer.writerow([
             "", "mean","stddev","mean","stddev","mean","stddev","mean","stddev"

@@ -29,7 +29,7 @@ def main():
     best_config = find_best_lora_config(lora)
     print("Best lora config is: ", best_config)
 
-    path = Path("full_vs_lora_table.csv")
+    path = Path("results/full_vs_lora_table.csv")
     path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(path, mode="w", newline="", encoding="utf-8") as f:

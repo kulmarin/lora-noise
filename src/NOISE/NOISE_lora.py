@@ -338,9 +338,9 @@ def whole_training(args) -> Dict[str, Any]:
     )
 
     # ------------------------------------------------------------------ #
-    # Step 4: Train
+    # Step 3: Train
     # ------------------------------------------------------------------ #
-    print("\nStep 4: Training on noisy or clean labels: ",args.target_label_col)
+    print("\nStep 3: Training on noisy or clean labels: ",args.target_label_col)
 
     history = train_any_model(
         model=wrapped_model,
