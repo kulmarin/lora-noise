@@ -34,7 +34,7 @@ def build_full_base_model(
 
 
 def whole_training() -> None:
-    flag = True
+    flag = False
     if flag:
         return pseudotraining()
 
